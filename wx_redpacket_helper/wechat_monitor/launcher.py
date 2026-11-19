@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from ..utils.logger import get_logger
+from ..utils.paths import app_dir
 
 logger = get_logger("launcher")
 
@@ -25,7 +26,7 @@ _WIN_WECHAT_EXE = [
 
 _EXE_NAMES = ("WeChat.exe", "WeChatApp.exe", "Weixin.exe")
 
-_DATA_ROOT = Path(__file__).parent.parent.parent / "TailRobotData"
+_DATA_ROOT = app_dir() / "TailRobotData"
 
 
 def _find_in_registry() -> list[str]:

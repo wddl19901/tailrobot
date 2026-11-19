@@ -43,10 +43,16 @@ class OcrWorker:
         self.log_cb = log_cb or (lambda m: None)
         self._stop = threading.Event()
         self._thread = None
-        self._engine, self._ocr = _pick_ocr()
+        self._engine = None
+        self._ocr = None
+        self._engine_ready = threading.Event()
         self._screenshotter = self._make_screenshot()
+
+    def _init_engine(self):
+        self._engine, self._ocr = _pick_ocr()
         if self._engine is None:
             logger.warning("未检测到 PaddleOCR 或 pytesseract，监控将降级为窗口检测")
+        self._engine_ready.set()
 
     def _make_screenshot(self):
         try:
@@ -61,7 +67,7 @@ class OcrWorker:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        logger.info(f"OCR worker started engine={self._engine} region={self.region}")
+        logger.info(f"OCR worker started, engine will load in background, region={self.region}")
 
     def stop(self):
         self._stop.set()
@@ -69,8 +75,12 @@ class OcrWorker:
             self._thread.join(timeout=2)
 
     def _run(self):
+        self._init_engine()
         while not self._stop.is_set():
             try:
+                if self._engine is None:
+                    time.sleep(1.0)
+                    continue
                 self._tick()
             except Exception as e:
                 logger.error(f"ocr tick error: {e}")

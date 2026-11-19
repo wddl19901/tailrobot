@@ -244,20 +244,26 @@ class MainWindow(QMainWindow):
         if not self.accounts:
             QMessageBox.information(self, "提示", "请先点击【一键添加登录微信】添加至少一个从账号")
             return
-        self._save_to_cfg()
-        subs = [Account(name=a.name(), handle=a.handle) for a in self.accounts]
-        strategy = "random" if self.random_cb.isChecked() else "order"
-        mode_map = ["standard", "sg", "niuniu"]
-        mode = mode_map[self.mode_cb.currentIndex()]
-        threshold = int(self.point_input.text().strip() or 7)
-        self.robot = RobotWorker(
-            accounts=subs, strategy=strategy, mode=mode, threshold=threshold,
-            log_cb=lambda m, p=False: self.log_signal.emit(m, p),
-            simulate_click=False if IS_WIN else True,
-        )
-        self.robot.start()
-        self._set_running(True)
-        self.robot_ready.emit("机器人已启动")
+        try:
+            import traceback
+            self._save_to_cfg()
+            subs = [Account(name=a.name(), handle=a.handle) for a in self.accounts]
+            strategy = "random" if self.random_cb.isChecked() else "order"
+            mode_map = ["standard", "sg", "niuniu"]
+            mode = mode_map[self.mode_cb.currentIndex()]
+            threshold = int(self.point_input.text().strip() or 7)
+            self.robot = RobotWorker(
+                accounts=subs, strategy=strategy, mode=mode, threshold=threshold,
+                log_cb=lambda m, p=False: self.log_signal.emit(m, p),
+                simulate_click=False if IS_WIN else True,
+            )
+            self.robot.start()
+            self._set_running(True)
+            self.robot_ready.emit("机器人已启动")
+        except Exception:
+            err = traceback.format_exc()
+            self.log_signal.emit("启动失败:\n" + err, False)
+            QMessageBox.critical(self, "启动失败", "启动机器人时发生异常，详情见日志区：\n\n" + err[:800])
 
     def _on_stop(self):
         if self.robot:

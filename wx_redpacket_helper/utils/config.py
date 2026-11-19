@@ -2,7 +2,9 @@ import json
 import os
 from pathlib import Path
 
-CONFIG_FILE = Path(__file__).parent.parent.parent / "config.json"
+from .paths import app_dir
+
+CONFIG_FILE = app_dir() / "config.json"
 
 _default_config = {
     "mode": "standard",

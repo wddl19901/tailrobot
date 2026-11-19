@@ -6,9 +6,10 @@ from pathlib import Path
 
 from ..security.crypto import encrypt_json, decrypt_json
 from ..security.ntp import get_server_time
+from ..utils.paths import app_dir
 from . import gateway
 
-AUTH_FILE = Path(__file__).parent.parent.parent / "auth_config.dat"
+AUTH_FILE = app_dir() / "auth_config.dat"
 
 TRIAL_HOURS = 24
 
