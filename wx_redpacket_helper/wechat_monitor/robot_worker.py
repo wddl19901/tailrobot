@@ -197,6 +197,8 @@ class RobotWorker:
                 who = self.accounts[0].name if self.accounts else "主号"
                 self.state.claimed_count += 1
                 self.log_cb(f"{who} 点开抢包执行 @({sx},{sy}) (共抢{self._picks}次)", True)
+                time.sleep(random.uniform(0.4, 0.6))
+                self._close_popup()
             return
         cards = detect_red_packet_cards(arr)
         if cards:
@@ -218,6 +220,17 @@ class RobotWorker:
         elif now - self._last_heartbeat_ts > 5:
             self._last_heartbeat_ts = now
             self.log_cb("监控中: 等待红包(卡片->弹窗->开钮 全自动)", False)
+
+    def _close_popup(self):
+        try:
+            time.sleep(random.uniform(0.10, 0.20))
+            self.clicker.press_escape()
+            time.sleep(random.uniform(0.08, 0.18))
+            self.clicker.press_escape()
+            time.sleep(random.uniform(0.08, 0.15))
+            self.log_cb("红包结果页已关闭(ESC)，继续监控下一个红包", False)
+        except Exception as e:
+            logger.debug(f"close popup: {e}")
 
     def _dump_debug(self, arr, tag):
         try:
@@ -242,6 +255,14 @@ class RobotWorker:
 
     def _on_ocr_text(self, text: str):
         self.remark.on_text(text)
+        if "存入零钱" in text or "已存入" in text:
+            m2 = re.search(r"(\d+(?:\.\d+)?)(?:\s*元)?", text)
+            if m2:
+                amt = float(m2.group(1))
+                if 0.005 <= amt <= 100000 and amt != getattr(self, "_last_grab_amt", None):
+                    self._last_grab_amt = amt
+                    who = self.accounts[0].name if self.accounts else "主号"
+                    self.log_cb(f"查询到账: {who} 本次抢到 {amt:.2f}元 已存入零钱", True)
         m = re.search(r"已领?取?\s*(\d+)\s*/\s*(\d+)", text)
         if m:
             claimed, total = int(m.group(1)), int(m.group(2))
