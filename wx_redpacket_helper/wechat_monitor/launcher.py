@@ -17,8 +17,13 @@ IS_WIN = platform.system() == "Windows"
 _WIN_WECHAT_EXE = [
     r"C:\Program Files\Tencent\WeChat\WeChat.exe",
     r"C:\Program Files (x86)\Tencent\WeChat\WeChat.exe",
+    r"C:\Program Files\Tencent\Weixin\Weixin.exe",
+    r"C:\Program Files (x86)\Tencent\Weixin\Weixin.exe",
     Path.home() / "AppData" / "Local" / "Programs" / "Tencent" / "WeChat" / "WeChat.exe",
+    Path.home() / "AppData" / "Local" / "Programs" / "Tencent" / "Weixin" / "Weixin.exe",
 ]
+
+_EXE_NAMES = ("WeChat.exe", "WeChatApp.exe", "Weixin.exe")
 
 _DATA_ROOT = Path(__file__).parent.parent.parent / "TailRobotData"
 
@@ -45,20 +50,21 @@ def _find_in_registry() -> list[str]:
                     skey = winreg.OpenKey(key, sub)
                     try:
                         display, _ = winreg.QueryValueEx(skey, "DisplayName")
-                        if "wechat" not in str(display).lower():
+                        if not any(k in str(display).lower() for k in ("wechat", "weixin")):
                             continue
                         loc, _ = winreg.QueryValueEx(skey, "InstallLocation")
                     except OSError:
                         continue
                     winreg.CloseKey(skey)
                     base = Path(str(loc)).expandvars()
-                    for name in ("WeChat.exe", "WeChatApp.exe"):
+                    for name in _EXE_NAMES:
                         exe = base / name
                         if exe.exists():
                             found.append(str(exe))
-                    x64 = base / "x64" / "WeChatApp.exe"
-                    if x64.exists():
-                        found.append(str(x64))
+                    for sub in ("x64", "x86"):
+                        x64 = base / sub / "WeChatApp.exe"
+                        if x64.exists():
+                            found.append(str(x64))
                 except OSError:
                     continue
             winreg.CloseKey(key)
@@ -83,22 +89,23 @@ def _scan_drives() -> list[str]:
             name = sub.name.lower()
             if not re.search(r"tencent|wechat|weixin|wx", name):
                 continue
-            for exe in sub.glob("**/WeChat.exe"):
-                found.append(str(exe))
-            for exe in sub.glob("**/WeChatApp.exe"):
-                found.append(str(exe))
+            for exe_name in _EXE_NAMES:
+                for exe in sub.glob(f"**/{exe_name}"):
+                    found.append(str(exe))
     return found
 
 
 def _find_with_where() -> list[str]:
-    try:
-        out = subprocess.run(["where", "WeChat.exe"], capture_output=True,
-                             text=True, timeout=5)
-        if out.returncode == 0:
-            return [line.strip() for line in out.stdout.splitlines() if line.strip()]
-    except Exception:
-        pass
-    return []
+    found: list[str] = []
+    for exe_name in _EXE_NAMES:
+        try:
+            out = subprocess.run(["where", exe_name], capture_output=True,
+                                 text=True, timeout=5)
+            if out.returncode == 0:
+                found += [line.strip() for line in out.stdout.splitlines() if line.strip()]
+        except Exception:
+            pass
+    return found
 
 
 def _find_wechat_exe() -> str | None:
