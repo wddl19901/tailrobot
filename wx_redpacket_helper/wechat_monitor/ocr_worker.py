@@ -36,11 +36,12 @@ class OcrWorker:
 
     INTERVAL = 0.12
 
-    def __init__(self, region=None, hwnd=0, on_tail=None, log_cb=None):
+    def __init__(self, region=None, hwnd=0, on_tail=None, log_cb=None, on_text=None):
         self.region = region
         self.hwnd = hwnd
         self.on_tail = on_tail
         self.log_cb = log_cb or (lambda m: None)
+        self.on_text = on_text
         self._stop = threading.Event()
         self._thread = None
         self._engine = None
@@ -119,6 +120,11 @@ class OcrWorker:
         text = self._ocr_text(arr)
         if not text:
             return
+        if self.on_text:
+            try:
+                self.on_text(text)
+            except Exception:
+                pass
         self._parse(text)
 
     def _parse(self, text: str):

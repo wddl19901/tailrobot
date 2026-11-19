@@ -83,6 +83,19 @@ class AutoClicker:
         else:
             logger.error("无点击后端")
 
+    def click_point(self, x: int, y: int, delay_ms: float = 30.0):
+        with self._lock:
+            if self.simulate_only:
+                logger.info(f"[SIMULATE] 跳过实际点击 ({x},{y})")
+                return True
+            delay_s = random.uniform(DELAY_MIN_MS, DELAY_MAX_MS) / 1000
+            time.sleep(min(delay_s, delay_ms / 1000))
+            x += random.randint(OFFSET_MIN, OFFSET_MAX) * random.choice((-1, 1))
+            y += random.randint(OFFSET_MIN, OFFSET_MAX) * random.choice((-1, 1))
+            self._raw_click(x, y)
+            logger.info(f"屏幕点击 ({x},{y})")
+            return True
+
     def pick_candidate(self, attempts=2):
         idx = 0
         while idx < attempts and idx < len(self.CANDIDATE_RATIOS):

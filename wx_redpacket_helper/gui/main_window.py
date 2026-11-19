@@ -147,6 +147,13 @@ class MainWindow(QMainWindow):
         play_row.addWidget(self.point_input)
         lay.addLayout(play_row)
 
+        remark_row = QHBoxLayout()
+        self.remark_input = QLineEdit()
+        self.remark_input.setPlaceholderText("锁定备注人(选填，只比对他的点数)")
+        remark_row.addWidget(QLabel("锁定"))
+        remark_row.addWidget(self.remark_input, 1)
+        lay.addLayout(remark_row)
+
         grp.setLayout(lay)
         return grp
 
@@ -261,6 +268,7 @@ class MainWindow(QMainWindow):
                 accounts=subs, strategy=strategy, mode=mode, threshold=threshold,
                 log_cb=lambda m, p=False: self.log_signal.emit(m, p),
                 simulate_click=False if IS_WIN else True,
+                remark_name=self.remark_input.text().strip(),
             )
             self.robot.start()
             self._set_running(True)
@@ -315,6 +323,7 @@ class MainWindow(QMainWindow):
         cfg["polling_strategy"] = "random" if self.random_cb.isChecked() else "order"
         cfg["accounts"] = [{"name": a.name(), "idx": a.idx, "handle": a.handle, "pid": a.pid} for a in self.accounts]
         cfg["autostart"] = self.autostart_cb.isChecked()
+        cfg["remark_name"] = self.remark_input.text().strip()
         save_config(cfg)
 
     def _load_state(self):
@@ -331,6 +340,7 @@ class MainWindow(QMainWindow):
             self.accounts.append(item)
             self._inst_seq = max(self._inst_seq, acc.get("idx", 0))
         self.autostart_cb.setChecked(self.cfg.get("autostart", False))
+        self.remark_input.setText(self.cfg.get("remark_name", ""))
         QTimer.singleShot(300, self._restore_wechat_instances)
 
     def _restore_wechat_instances(self):
