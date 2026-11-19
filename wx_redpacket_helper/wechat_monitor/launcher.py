@@ -3,6 +3,8 @@ Windows: 启动 WeChat.exe 并指定独立数据路径
 macOS:   open -n 启动独立新实例
 """
 import platform
+import re
+import string
 import subprocess
 from pathlib import Path
 
@@ -21,10 +23,96 @@ _WIN_WECHAT_EXE = [
 _DATA_ROOT = Path(__file__).parent.parent.parent / "TailRobotData"
 
 
+def _find_in_registry() -> list[str]:
+    found: list[str] = []
+    try:
+        import winreg
+        for view in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
+            try:
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                                     0, winreg.KEY_READ | view)
+            except OSError:
+                continue
+            i = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(key, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    skey = winreg.OpenKey(key, sub)
+                    try:
+                        display, _ = winreg.QueryValueEx(skey, "DisplayName")
+                        if "wechat" not in str(display).lower():
+                            continue
+                        loc, _ = winreg.QueryValueEx(skey, "InstallLocation")
+                    except OSError:
+                        continue
+                    winreg.CloseKey(skey)
+                    base = Path(str(loc)).expandvars()
+                    for name in ("WeChat.exe", "WeChatApp.exe"):
+                        exe = base / name
+                        if exe.exists():
+                            found.append(str(exe))
+                    x64 = base / "x64" / "WeChatApp.exe"
+                    if x64.exists():
+                        found.append(str(x64))
+                except OSError:
+                    continue
+            winreg.CloseKey(key)
+    except Exception:
+        pass
+    return found
+
+
+def _scan_drives() -> list[str]:
+    found: list[str] = []
+    try:
+        import ctypes
+        mask = ctypes.windll.kernel32.GetLogicalDrives()
+        drives = [c for c, bit in zip(string.ascii_uppercase, range(26)) if mask & (1 << bit)]
+    except Exception:
+        drives = ["C"]
+    for drive in drives:
+        root = Path(f"{drive}:\\")
+        if not root.exists():
+            continue
+        for sub in root.glob("*"):
+            name = sub.name.lower()
+            if not re.search(r"tencent|wechat|weixin|wx", name):
+                continue
+            for exe in sub.glob("**/WeChat.exe"):
+                found.append(str(exe))
+            for exe in sub.glob("**/WeChatApp.exe"):
+                found.append(str(exe))
+    return found
+
+
+def _find_with_where() -> list[str]:
+    try:
+        out = subprocess.run(["where", "WeChat.exe"], capture_output=True,
+                             text=True, timeout=5)
+        if out.returncode == 0:
+            return [line.strip() for line in out.stdout.splitlines() if line.strip()]
+    except Exception:
+        pass
+    return []
+
+
 def _find_wechat_exe() -> str | None:
-    for p in _WIN_WECHAT_EXE:
-        if Path(p).exists():
-            return str(p)
+    candidates: list[str] = []
+    candidates += [str(p) for p in _WIN_WECHAT_EXE]
+    candidates += _find_in_registry()
+    candidates += _scan_drives()
+    candidates += _find_with_where()
+    for c in candidates:
+        try:
+            if Path(c).exists():
+                return c
+        except OSError:
+            continue
     return None
 
 
