@@ -1,5 +1,6 @@
 """机器人工作线程：主号秒抢 + 从号尾包点数决策 + 备注人锁定"""
 import re
+import random
 import threading
 import time
 
@@ -8,19 +9,46 @@ import numpy as np
 from ..utils.logger import get_logger
 from ..calc_engine.calculator import get_points
 from .ocr_worker import OcrWorker
-from .redpack import detect_redpack
+from .redpack import detect_red_packet_cards, detect_open_button
 from ..executor.auto_clicker import AutoClicker
 from .account_manager import PollingAllocator, RedPacketState
 from ..orchestrator import Account
 
 logger = get_logger("robot")
 
-MAX_POINTS_FALLBACK = 9
-
 try:
     import mss
 except Exception:
     mss = None
+
+
+def find_wechat_hwnd():
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+    except Exception:
+        return None
+    for cls, title in (("Qt51514QWindowIcon", "微信"),
+                       ("Qt6514QWindowIcon", "微信"),
+                       ("WeChatMainWndForPC", "微信")):
+        try:
+            h = user32.FindWindowW(cls, title)
+            if h:
+                return h
+        except Exception:
+            pass
+    try:
+        return user32.FindWindowW(None, "微信") or None
+    except Exception:
+        return None
+
+
+def get_window_rect(hwnd, user32):
+    import ctypes
+    from ctypes import wintypes
+    rect = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    return (rect.left, rect.top, rect.right, rect.bottom)
 
 
 class RemarkTracker:
@@ -70,13 +98,15 @@ class RobotWorker:
                              on_text=self._on_ocr_text)
         self._stop = threading.Event()
         self._thread = None
-        self._round_active = False
-        self._last_button_ts = 0.0
-        self._last_click_ts = 0.0
-        self._click_cooldown_s = 1.0
+        self._hwnd = None
+        self._rect = None
         self._picks = 0
-        self._last_progress_log_ts = 0.0
+        self._last_click_ts = 0.0
+        self._last_card_click_ts = 0.0
         self._last_heartbeat_ts = 0.0
+        self._round_active = False
+        self._last_signal_ts = 0.0
+        self._clicked = []
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -98,60 +128,96 @@ class RobotWorker:
 
     def _run(self):
         if mss is None:
-            self.log_cb("未检测到 mss 截图库，无法监控红包按钮")
+            self.log_cb("未检测到 mss 截图库，无法监控红包")
             return
         sct = mss.mss()
         while not self._stop.is_set():
             try:
-                self._tick_screen(sct)
+                self._tick(sct)
             except Exception as e:
                 logger.error(f"watchdog tick error: {e}")
-            time.sleep(0.12)
+            time.sleep(0.1 + random.uniform(0, 0.05))
 
-    def _tick_screen(self, sct):
-        mon = sct.monitors[0]
-        if mon.get("left"):
-            mon = {"left": 0, "top": 0,
-                   "width": mon["left"] + mon["right"],
-                   "height": mon["top"] + mon["bottom"]}
-        arr = np.asarray(sct.grab(mon))
-        rp = detect_redpack(arr)
+    def _wechat_mon(self, sct):
+        h = find_wechat_hwnd()
+        if not h:
+            return None
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            rect = get_window_rect(h, user32)
+        except Exception:
+            return None
+        if rect[2] <= rect[0] or rect[3] <= rect[1]:
+            return None
+        m = {"left": rect[0], "top": rect[1],
+             "width": rect[2] - rect[0], "height": rect[3] - rect[1]}
+        if m["left"] < 0:
+            m["left"] = 0
+        return m
+
+    def _is_clicked(self, sx, sy, threshold=30):
+        for cx, cy in self._clicked:
+            if abs(sx - cx) < threshold and abs(sy - cy) < threshold:
+                return True
+        return False
+
+    def _record_click(self, sx, sy):
+        self._clicked.append((sx, sy))
+        if len(self._clicked) > 200:
+            self._clicked = self._clicked[-100:]
+
+    def _tick(self, sct):
         now = time.time()
-        if rp:
-            self._last_button_ts = now
-            self._last_rp = rp
+        m = self._wechat_mon(sct)
+        if m:
+            self._rect = (m["left"], m["top"])
+            arr = np.asarray(sct.grab(m))
+            self._process(arr, now)
+        elif now - self._last_heartbeat_ts > 5:
+            self._last_heartbeat_ts = now
+            self.log_cb("监控中: 未找到微信窗口(请确认微信已登录且窗口未最小化)", False)
+
+    def _process(self, arr, now):
+        ob = detect_open_button(arr)
+        if ob:
+            self._last_signal_ts = now
+            sx, sy = self._rect[0] + ob["cx"], self._rect[1] + ob["cy"]
             if not self._round_active:
                 self._round_active = True
-                self.state.__init__()
-                target = self._pick_target(rp)
-                self.log_cb(f"红包轮次开始: 红弹窗覆盖率{int(rp['ratio']*100)}% 目标坐标 {target[0]},{target[1]}，主号秒抢")
-                if now - self._last_click_ts >= self._click_cooldown_s:
-                    main = self.accounts[0] if self.accounts else None
-                    self._last_click_ts = now
-                    self._picks += 1
-                    self.clicker.click_point(target[0], target[1])
-                    self.state.total_count = 1
-                    self.state.claimed_count = 1
-                    self.log_cb(f"主号 {main.name if main else '-'} 已秒抢第1个包 (共抢{self._picks}次)", True)
-                self._dump_debug(arr, "round_start")
-            else:
-                if now - self._last_progress_log_ts > 3:
-                    self._last_progress_log_ts = now
-                    self.log_cb(f"红包进行中，从号已就位等待尾包... 累计抢{self._picks}次", False)
-        elif not self._round_active:
-            if now - self._last_heartbeat_ts > 5:
-                self._last_heartbeat_ts = now
-                self.log_cb("监控中: 未发现红包弹窗(群里发红包时会自动抢)", False)
-        elif self._round_active and now - self._last_button_ts > 4:
+                self.log_cb(f"红包弹窗已打开(面板{ob['panel']}) 开钮@{sx},{sy}", False)
+                self._dump_debug(arr, "popup")
+            if not self._is_clicked(sx, sy) and now - self._last_click_ts >= 0.6:
+                delay = random.uniform(0.05, 0.15)
+                time.sleep(delay)
+                self._last_click_ts = time.time()
+                self._picks += 1
+                self._record_click(sx, sy)
+                self.clicker.click_point(sx, sy)
+                who = self.accounts[0].name if self.accounts else "主号"
+                self.state.claimed_count += 1
+                self.log_cb(f"{who} 点开抢包执行 @({sx},{sy}) (共抢{self._picks}次)", True)
+            return
+        cards = detect_red_packet_cards(arr)
+        if cards:
+            self._last_signal_ts = now
+            newest = cards[-1]
+            sx, sy = self._rect[0] + newest["cx"], self._rect[1] + newest["cy"]
+            if now - self._last_card_click_ts >= 0.8:
+                self._last_card_click_ts = now
+                self.log_cb(f"检测到红包卡片{len(cards)}个，点击最新@{sx},{sy} (尺寸{newest['w']}x{newest['h']})")
+                self._dump_debug(arr, "cards")
+                delay = random.uniform(0.05, 0.15)
+                time.sleep(delay)
+                self._record_click(sx, sy)
+                self.clicker.click_point(sx, sy)
+            return
+        if self._round_active and now - self._last_signal_ts > 4:
             self._round_active = False
-            self.state.__init__()
             self.log_cb(f"红包轮次结束，本轮共抢{self._picks}次", self._picks > 0)
-
-    def _pick_target(self, rp):
-        if rp.get("gold_cx") is not None:
-            return rp["gold_cx"], rp["gold_cy"]
-        H, W = rp["H"], rp["W"]
-        return rp["red_cx"], min(int(rp["red_cy"] + 320), H - 40)
+        elif now - self._last_heartbeat_ts > 5:
+            self._last_heartbeat_ts = now
+            self.log_cb("监控中: 等待红包(卡片->弹窗->开钮 全自动)", False)
 
     def _dump_debug(self, arr, tag):
         try:
@@ -164,12 +230,12 @@ class RobotWorker:
                 a = a[:, :, [2, 1, 0]]
             img = Image.fromarray(a.astype("uint8"))
             dr = ImageDraw.Draw(img)
-            rp = getattr(self, "_last_rp", None)
-            if rp:
-                t = self._pick_target(rp)
-                dr.rectangle([rp["red_cx"] - 60, rp["red_cy"] - 60,
-                              rp["red_cx"] + 60, rp["red_cy"] + 60], outline="yellow", width=3)
-                dr.ellipse([t[0] - 30, t[1] - 30, t[0] + 30, t[1] + 30], outline="cyan", width=3)
+            for cx, cy in self._clicked[-20:]:
+                try:
+                    lx, ly = cx - self._rect[0], cy - self._rect[1]
+                    dr.ellipse([lx - 20, ly - 20, lx + 20, ly + 20], outline="cyan", width=3)
+                except Exception:
+                    pass
             img.save(ddir / f"debug_{tag}_{time.strftime('%H%M%S')}.png")
         except Exception as e:
             logger.debug(f"debug dump failed: {e}")
@@ -218,7 +284,7 @@ class RobotWorker:
                 self.log_cb(" ".join(lines), False)
 
     def _pick(self, lines, tail_points):
-        if time.time() - self._last_click_ts < self._click_cooldown_s:
+        if time.time() - self._last_click_ts < 0.6:
             return
         sub = self.allocation.next_account()
         if not sub:
@@ -227,19 +293,21 @@ class RobotWorker:
         self._last_click_ts = time.time()
         self._picks += 1
         self.log_cb(" ".join(lines + [f"从号[{sub.name}] 尾包{tail_points}点秒抢执行 (共抢{self._picks}次)"]), True)
-        self._click_last_button()
+        self._click_open_button()
 
-    def _click_last_button(self):
+    def _click_open_button(self):
         try:
             import mss as _mss
             sct = _mss.mss()
-            mon = sct.monitors[0]
-            arr = np.asarray(sct.grab(mon))
-            rp = detect_redpack(arr)
-            if rp:
-                self._last_rp = rp
-                x, y = self._pick_target(rp)
-                self.clicker.click_point(x, y)
+            m = self._wechat_mon(sct) or {"left": 0, "top": 0,
+                                          "width": sct.monitors[0]["left"] + sct.monitors[0]["right"],
+                                          "height": sct.monitors[0]["top"] + sct.monitors[0]["bottom"]}
+            arr = np.asarray(sct.grab(m))
+            ob = detect_open_button(arr)
+            if ob:
+                sx, sy = m["left"] + ob["cx"], m["top"] + ob["cy"]
+                self._record_click(sx, sy)
+                self.clicker.click_point(sx, sy)
                 return
         except Exception:
             pass
