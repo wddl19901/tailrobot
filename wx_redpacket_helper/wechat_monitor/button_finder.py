@@ -15,7 +15,7 @@ def detect_red_blocks(arr, channel_order="rgb"):
             r, g, b = a[..., 0], a[..., 1], a[..., 2]
     else:
         return []
-    mask = (r > 170) & (g < 135) & (b < 135)
+    mask = (r > 150) & ((r - g) > 45) & ((r - b) > 45)
     if not mask.any():
         return []
     H, W = mask.shape

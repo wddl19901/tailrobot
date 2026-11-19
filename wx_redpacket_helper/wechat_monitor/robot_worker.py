@@ -76,6 +76,7 @@ class RobotWorker:
         self._click_cooldown_s = 1.0
         self._picks = 0
         self._last_progress_log_ts = 0.0
+        self._last_heartbeat_ts = 0.0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -122,7 +123,7 @@ class RobotWorker:
             if not self._round_active:
                 self._round_active = True
                 self.state.__init__()
-                self.log_cb(f"红包轮次开始，检测到{len(buttons)}个领取按钮，主号秒抢第1个包")
+                self.log_cb(f"红包轮次开始，检测到{len(buttons)}个领取按钮(目标坐标 {target['cx']},{target['cy']})，主号秒抢第1个包")
                 if now - self._last_click_ts >= self._click_cooldown_s:
                     main = self.accounts[0] if self.accounts else None
                     self._last_click_ts = now
@@ -131,14 +132,36 @@ class RobotWorker:
                     self.state.total_count = 1
                     self.state.claimed_count = 1
                     self.log_cb(f"主号 {main.name if main else '-'} 已秒抢第1个包 (共抢{self._picks}次)", True)
+                self._dump_debug(arr, buttons, "round_start")
             else:
                 if now - self._last_progress_log_ts > 3:
                     self._last_progress_log_ts = now
                     self.log_cb(f"红包进行中，从号已就位等待尾包... 累计抢{self._picks}次", False)
+        elif not self._round_active:
+            if now - self._last_heartbeat_ts > 5:
+                self._last_heartbeat_ts = now
+                self.log_cb("监控中: 未发现红包领取按钮(请确认微信红包群窗口已打开且红包可见)", False)
         elif self._round_active and now - self._last_button_ts > 4:
             self._round_active = False
             self.state.__init__()
             self.log_cb(f"红包轮次结束，本轮共抢{self._picks}次", self._picks > 0)
+
+    def _dump_debug(self, arr, buttons, tag):
+        try:
+            from PIL import Image, ImageDraw
+            from ..utils.paths import app_dir
+            ddir = app_dir() / "logs" / "debug"
+            ddir.mkdir(parents=True, exist_ok=True)
+            a = arr.copy()
+            if a.shape[2] == 4:
+                a = a[:, :, [2, 1, 0]]
+            img = Image.fromarray(a.astype("uint8"))
+            dr = ImageDraw.Draw(img)
+            for b in buttons:
+                dr.rectangle([b["x0"], b["y0"], b["x0"] + b["w"], b["y0"] + b["h"]], outline="yellow", width=3)
+            img.save(ddir / f"debug_{tag}_{time.strftime('%H%M%S')}.png")
+        except Exception as e:
+            logger.debug(f"debug dump failed: {e}")
 
     def _on_ocr_text(self, text: str):
         self.remark.on_text(text)
