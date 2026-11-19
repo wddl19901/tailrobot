@@ -15,7 +15,7 @@ from ..utils.config import load_config, save_config
 from ..utils.autostart import set_enabled as autostart_set
 from ..billing.auth_manager import AuthManager, AuthError
 from ..billing import gateway
-from ..wechat_monitor.launcher import launch_instance
+from ..wechat_monitor.launcher import launch_instance, pid_alive
 from ..wechat_monitor.robot_worker import RobotWorker
 from ..orchestrator import Account
 
@@ -23,10 +23,11 @@ IS_WIN = platform.system() == "Windows"
 
 
 class AccountItem(QListWidgetItem):
-    def __init__(self, name: str, idx: int, handle: int = 0):
+    def __init__(self, name: str, idx: int, handle: int = 0, pid: int = 0):
         super().__init__(name)
         self.idx = idx
         self.handle = handle
+        self.pid = pid
 
 
 class MainWindow(QMainWindow):
@@ -181,9 +182,10 @@ class MainWindow(QMainWindow):
         idx = self._inst_seq
         res = launch_instance(idx)
         if res["success"]:
-            item = AccountItem(f"从号-{idx}", idx)
+            item = AccountItem(f"从号-{idx}", idx, pid=res["pid"])
             self.acc_list.addItem(item)
             self.accounts.append(item)
+            self._save_to_cfg()
             self.robot_ready.emit(res["note"])
         else:
             QMessageBox.warning(self, "启动失败", res["note"])
@@ -308,7 +310,7 @@ class MainWindow(QMainWindow):
         cfg = self.cfg.copy()
         cfg["mode"] = mode_map[self.mode_cb.currentIndex()]
         cfg["polling_strategy"] = "random" if self.random_cb.isChecked() else "order"
-        cfg["accounts"] = [{"name": a.name(), "idx": a.idx, "handle": a.handle} for a in self.accounts]
+        cfg["accounts"] = [{"name": a.name(), "idx": a.idx, "handle": a.handle, "pid": a.pid} for a in self.accounts]
         cfg["autostart"] = self.autostart_cb.isChecked()
         save_config(cfg)
 
@@ -318,11 +320,30 @@ class MainWindow(QMainWindow):
         self.random_cb.setChecked(self.cfg.get("polling_strategy", "random") == "random")
         self.point_input.setText(str(self.cfg.get("rules", {}).get("rule_one_threshold", 7)))
         for acc in self.cfg.get("accounts", []):
-            item = AccountItem(acc.get("name", ""), acc.get("idx", 0), acc.get("handle", 0))
+            item = AccountItem(
+                acc.get("name", ""), acc.get("idx", 0),
+                acc.get("handle", 0), acc.get("pid", 0),
+            )
             self.acc_list.addItem(item)
             self.accounts.append(item)
             self._inst_seq = max(self._inst_seq, acc.get("idx", 0))
         self.autostart_cb.setChecked(self.cfg.get("autostart", False))
+        QTimer.singleShot(300, self._restore_wechat_instances)
+
+    def _restore_wechat_instances(self):
+        threading.Thread(target=self._restore_in_bg, daemon=True).start()
+
+    def _restore_in_bg(self):
+        for a in self.accounts:
+            if pid_alive(a.pid):
+                self.robot_ready.emit(f"检测到微信实例仍存活: {a.name()} (pid={a.pid})")
+                continue
+            res = launch_instance(a.idx)
+            if res["success"]:
+                a.pid = res["pid"]
+                self.robot_ready.emit(f"自动恢复微信登录态: {a.name()}")
+            else:
+                self.robot_ready.emit(f"恢复微信失败: {a.name()} {res['note']}")
 
     def _append_log(self, msg: str, picked: bool):
         from datetime import datetime

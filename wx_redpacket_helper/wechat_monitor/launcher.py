@@ -2,6 +2,7 @@
 Windows: 启动 WeChat.exe 并指定独立数据路径
 macOS:   open -n 启动独立新实例
 """
+import os
 import platform
 import re
 import string
@@ -122,6 +123,27 @@ def _find_wechat_exe() -> str | None:
         except OSError:
             continue
     return None
+
+
+def pid_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    if IS_WIN:
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            return str(pid) in out
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return False
 
 
 def launch_instance(index: int) -> dict:
