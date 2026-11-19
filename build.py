@@ -8,6 +8,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 ROOT = Path(__file__).parent
 ENTRY = ROOT / "main.py"
 DIST = ROOT / "dist"
