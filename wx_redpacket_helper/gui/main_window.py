@@ -26,11 +26,27 @@ class AccountItem(QListWidgetItem):
     def __init__(self, name: str, idx: int, handle: int = 0, pid: int = 0):
         super().__init__(name)
         self.idx = idx
-        self.handle = handle
-        self.pid = pid
+        self._handle = handle
+        self._pid = pid
 
     def name(self) -> str:
         return self.text()
+
+    @property
+    def handle(self) -> int:
+        return getattr(self, "_handle", 0)
+
+    @handle.setter
+    def handle(self, value: int):
+        self._handle = value
+
+    @property
+    def pid(self) -> int:
+        return getattr(self, "_pid", 0)
+
+    @pid.setter
+    def pid(self, value: int):
+        self._pid = value
 
 
 class MainWindow(QMainWindow):
@@ -334,7 +350,7 @@ class MainWindow(QMainWindow):
         for acc in self.cfg.get("accounts", []):
             item = AccountItem(
                 acc.get("name", ""), acc.get("idx", 0),
-                acc.get("handle", 0), acc.get("pid", 0),
+                handle=acc.get("handle", 0), pid=acc.get("pid", 0),
             )
             self.acc_list.addItem(item)
             self.accounts.append(item)

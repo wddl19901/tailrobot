@@ -62,7 +62,7 @@ class RobotWorker:
         self.threshold = threshold
         self.log_cb = log_cb or (lambda m, p=False: None)
         self.state = RedPacketState()
-        self.allocation = PollingAllocator(accounts, strategy)
+        self.allocation = PollingAllocator(accounts[1:] or accounts, strategy)
         self.clicker = AutoClicker(simulate_only=simulate_click)
         self.remark = RemarkTracker(remark_name)
         self.ocr = OcrWorker(region=ocr_region, on_tail=self._on_tail,
@@ -162,8 +162,6 @@ class RobotWorker:
         self._decide_tail()
 
     def _decide_tail(self):
-        if time.time() - self._last_click_ts < self._click_cooldown_s:
-            return
         tail = self.state.calc_tail_amount()
         tail_points = get_points(self.mode, tail)
         digits = sum(int(c) for c in f"{round(tail, 2):.2f}".replace(".", ""))
@@ -186,6 +184,8 @@ class RobotWorker:
                 self.log_cb(" ".join(lines), False)
 
     def _pick(self, lines, tail_points):
+        if time.time() - self._last_click_ts < self._click_cooldown_s:
+            return
         sub = self.allocation.next_account()
         if not sub:
             self.log_cb(" ".join(lines + ["无可用从账号，放弃"]), False)
