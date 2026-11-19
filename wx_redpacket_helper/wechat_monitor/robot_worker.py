@@ -8,7 +8,7 @@ import numpy as np
 from ..utils.logger import get_logger
 from ..calc_engine.calculator import get_points
 from .ocr_worker import OcrWorker
-from .button_finder import detect_red_blocks, find_claim_buttons
+from .redpack import detect_redpack
 from ..executor.auto_clicker import AutoClicker
 from .account_manager import PollingAllocator, RedPacketState
 from ..orchestrator import Account
@@ -115,24 +115,25 @@ class RobotWorker:
                    "width": mon["left"] + mon["right"],
                    "height": mon["top"] + mon["bottom"]}
         arr = np.asarray(sct.grab(mon))
-        buttons = find_claim_buttons(detect_red_blocks(arr), arr.shape[1], arr.shape[0])
+        rp = detect_redpack(arr)
         now = time.time()
-        if buttons:
+        if rp:
             self._last_button_ts = now
-            target = sorted(buttons, key=lambda b: b["cy"])[-1]
+            self._last_rp = rp
             if not self._round_active:
                 self._round_active = True
                 self.state.__init__()
-                self.log_cb(f"红包轮次开始，检测到{len(buttons)}个领取按钮(目标坐标 {target['cx']},{target['cy']})，主号秒抢第1个包")
+                target = self._pick_target(rp)
+                self.log_cb(f"红包轮次开始: 红弹窗覆盖率{int(rp['ratio']*100)}% 目标坐标 {target[0]},{target[1]}，主号秒抢")
                 if now - self._last_click_ts >= self._click_cooldown_s:
                     main = self.accounts[0] if self.accounts else None
                     self._last_click_ts = now
                     self._picks += 1
-                    self.clicker.click_point(target["cx"], target["cy"])
+                    self.clicker.click_point(target[0], target[1])
                     self.state.total_count = 1
                     self.state.claimed_count = 1
                     self.log_cb(f"主号 {main.name if main else '-'} 已秒抢第1个包 (共抢{self._picks}次)", True)
-                self._dump_debug(arr, buttons, "round_start")
+                self._dump_debug(arr, "round_start")
             else:
                 if now - self._last_progress_log_ts > 3:
                     self._last_progress_log_ts = now
@@ -140,13 +141,19 @@ class RobotWorker:
         elif not self._round_active:
             if now - self._last_heartbeat_ts > 5:
                 self._last_heartbeat_ts = now
-                self.log_cb("监控中: 未发现红包领取按钮(请确认微信红包群窗口已打开且红包可见)", False)
+                self.log_cb("监控中: 未发现红包弹窗(群里发红包时会自动抢)", False)
         elif self._round_active and now - self._last_button_ts > 4:
             self._round_active = False
             self.state.__init__()
             self.log_cb(f"红包轮次结束，本轮共抢{self._picks}次", self._picks > 0)
 
-    def _dump_debug(self, arr, buttons, tag):
+    def _pick_target(self, rp):
+        if rp.get("gold_cx") is not None:
+            return rp["gold_cx"], rp["gold_cy"]
+        H, W = rp["H"], rp["W"]
+        return rp["red_cx"], min(int(rp["red_cy"] + 320), H - 40)
+
+    def _dump_debug(self, arr, tag):
         try:
             from PIL import Image, ImageDraw
             from ..utils.paths import app_dir
@@ -157,8 +164,12 @@ class RobotWorker:
                 a = a[:, :, [2, 1, 0]]
             img = Image.fromarray(a.astype("uint8"))
             dr = ImageDraw.Draw(img)
-            for b in buttons:
-                dr.rectangle([b["x0"], b["y0"], b["x0"] + b["w"], b["y0"] + b["h"]], outline="yellow", width=3)
+            rp = getattr(self, "_last_rp", None)
+            if rp:
+                t = self._pick_target(rp)
+                dr.rectangle([rp["red_cx"] - 60, rp["red_cy"] - 60,
+                              rp["red_cx"] + 60, rp["red_cy"] + 60], outline="yellow", width=3)
+                dr.ellipse([t[0] - 30, t[1] - 30, t[0] + 30, t[1] + 30], outline="cyan", width=3)
             img.save(ddir / f"debug_{tag}_{time.strftime('%H%M%S')}.png")
         except Exception as e:
             logger.debug(f"debug dump failed: {e}")
@@ -224,10 +235,11 @@ class RobotWorker:
             sct = _mss.mss()
             mon = sct.monitors[0]
             arr = np.asarray(sct.grab(mon))
-            buttons = find_claim_buttons(detect_red_blocks(arr), arr.shape[1], arr.shape[0])
-            if buttons:
-                b = sorted(buttons, key=lambda x: x["cy"])[-1]
-                self.clicker.click_point(b["cx"], b["cy"])
+            rp = detect_redpack(arr)
+            if rp:
+                self._last_rp = rp
+                x, y = self._pick_target(rp)
+                self.clicker.click_point(x, y)
                 return
         except Exception:
             pass

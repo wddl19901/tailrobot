@@ -70,6 +70,36 @@ class MainWindow(QMainWindow):
         self._auth_timer = QTimer(self)
         self._auth_timer.timeout.connect(self._refresh_auth)
         self._auth_timer.start(30000)
+        self._login_check_timer = QTimer(self)
+        self._login_check_timer.timeout.connect(self._check_wechat_login)
+        self._login_check_timer.start(10000)
+        self._last_login_warn = 0.0
+
+    def _check_wechat_login(self):
+        try:
+            import win32gui
+        except Exception:
+            return
+        try:
+            found = []
+            def _cb(hwnd, _):
+                try:
+                    if not win32gui.IsWindowVisible(hwnd):
+                        return
+                    t = (win32gui.GetWindowText(hwnd) or "").strip()
+                    if t and ("登录微信" in t or ("登录" in t and "微信" in t)):
+                        found.append(t)
+                except Exception:
+                    pass
+                return True
+            win32gui.EnumWindows(_cb, None)
+        except Exception:
+            return
+        if found:
+            import time as _t
+            if _t.time() - self._last_login_warn > 60:
+                self._last_login_warn = _t.time()
+                self.log_signal.emit(f"检测到微信登录窗口({found[0]})：登录态已失效，请快速重新登录(数据已保留，通常免扫码)", True)
 
     def _apply_style(self):
         self.setStyleSheet(QSS)
