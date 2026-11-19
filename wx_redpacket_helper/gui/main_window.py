@@ -29,6 +29,9 @@ class AccountItem(QListWidgetItem):
         self.handle = handle
         self.pid = pid
 
+    def name(self) -> str:
+        return self.text()
+
 
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str, bool)
