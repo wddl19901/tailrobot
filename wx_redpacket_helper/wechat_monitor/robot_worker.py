@@ -325,11 +325,11 @@ class RobotWorker:
                     return True
                 self._last_result_gone_ts = 0.0
                 self._last_close_ts = 0.0
-                if self._cur_card_pos and self.state.remaining >= 1 and self._tail_mark is None:
+                if self._cur_card_pos and self._tail_mark is None and (self.state.total_count == 0 or self.state.remaining >= 1):
                     sx, sy = self._cur_card_pos
                     self._record_click(sx, sy)
                     self._last_card_click_ts = time.time()
-                    self.log_cb(f"抢完按ESC，再点刚才的红包查剩余包数(剩{self.state.remaining}个)", False)
+                    self.log_cb(f"抢完按ESC，再点刚才的红包查剩余包数", False)
                     time.sleep(random.uniform(0.05, 0.15))
                     self.clicker.click_point(sx, sy)
             return True
@@ -374,6 +374,8 @@ class RobotWorker:
                     self.log_cb(f"{who} 本包结束: 共抢{self._picks}个 合计{self._main_claimed_sum:.2f}元，停止点击本包", self._picks > 0)
                     self._card_done = False
                     self._last_card_pos = None
+                    self._cur_card_key = None
+                    self._cur_card_pos = None
             else:
                 self._ob_first_ts = 0.0
         cards = detect_red_packet_cards(arr)
@@ -384,22 +386,22 @@ class RobotWorker:
                 return True
             newest = cards[-1]
             key = (newest["cx"] // 16, newest["cy"] // 16)
-            if key != self._cur_card_key:
-                self._cur_card_key = key
-                self._cur_card_pos = (self._rect[0] + newest["cx"], self._rect[1] + newest["cy"])
-                self._reset_round()
-                self.log_cb(f"检测到新红包卡片({len(cards)}个)，点击最新 @{self._cur_card_pos[0]},{self._cur_card_pos[1]}", True)
-                self._dump_debug(arr, "cards")
+            if key == self._cur_card_key:
+                return True
+            self._cur_card_key = key
+            self._cur_card_pos = (self._rect[0] + newest["cx"], self._rect[1] + newest["cy"])
+            self._reset_round()
+            self.log_cb(f"检测到新红包卡片({len(cards)}个)，点击最新 @{self._cur_card_pos[0]},{self._cur_card_pos[1]}", True)
+            self._dump_debug(arr, "cards")
             sx, sy = self._cur_card_pos
-            if now - self._last_card_click_ts >= 0.8:
-                self._last_card_click_ts = now
-                delay = random.uniform(0.05, 0.15)
-                time.sleep(delay)
-                self._record_click(sx, sy)
-                self._last_card_pos = (sx, sy)
-                self.clicker.click_point(sx, sy)
-                self._card_done = True
-                self._round_active = True
+            self._last_card_click_ts = now
+            delay = random.uniform(0.05, 0.15)
+            time.sleep(delay)
+            self._record_click(sx, sy)
+            self._last_card_pos = (sx, sy)
+            self.clicker.click_point(sx, sy)
+            self._card_done = True
+            self._round_active = True
             return True
         side = detect_sidebar_redpack(arr)
         if side and not self._round_active:
