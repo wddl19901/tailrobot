@@ -165,42 +165,38 @@ def detect_open_button(arr):
 
 
 def detect_result_close(arr):
-    """红包结果页: 顶部红色头带 + 右上角白色×; 头带高度小于窗口35%以区别于整片红的开包弹窗"""
+    """红包结果页: 顶部红色头带(高度<窗口30%, 与开包弹窗整片红区分) + 头带右上白×"""
     if arr is None or arr.size == 0 or arr.ndim != 3 or arr.shape[2] < 3:
         return None
     r, g, b = _channels(arr)
-    red = (r >= 195) & (g <= 130) & (b <= 110)
-    H, W = red.shape
+    H, W = arr.shape[:2]
+    red = (r >= 190) & (g <= 140) & (b <= 120)
     rows = red.sum(axis=1)
-    hit = [i for i in range(H) if rows[i] > 200]
+    top_h = max(80, int(H * 0.30))
+    need = max(80, int(W * 0.25))
+    hit = [i for i in range(top_h) if rows[i] > need]
     if not hit:
         return None
-    y0 = hit[0]
-    y1 = y0
-    for i in range(y0 + 1, min(H, y0 + 500)):
-        if rows[i] > 200:
-            y1 = i
-        else:
-            break
+    y0, y1 = hit[0], hit[-1]
+    if y0 > H * 0.05:
+        return None
     band_h = y1 - y0
-    if band_h < 60 or band_h > H * 0.35:
+    if band_h < 30 or band_h > H * 0.30:
         return None
     band = red[y0:y1 + 1]
-    cols = np.where(band.sum(axis=0) > band_h * 0.5)[0]
+    cols = np.where(band.sum(axis=0) > band_h * 0.3)[0]
     if cols.size == 0:
         return None
-    x1 = int(cols[-1])
     x0 = int(cols[0])
-    bx = x1 - 110
-    if bx < 0:
-        bx = 0
-    bh = min(55, band_h)
-    box_r = r[y0 + 4:y0 + 4 + bh, bx:x1]
-    box_g = g[y0 + 4:y0 + 4 + bh, bx:x1]
-    box_b = b[y0 + 4:y0 + 4 + bh, bx:x1]
-    white = (box_r >= 190) & (box_g >= 190) & (box_b >= 190)
-    if int(white.sum()) < 8:
+    x1 = int(cols[-1])
+    bx0 = max(0, x1 - 180)
+    bh = min(90, band_h)
+    box_r = r[y0:y0 + bh, bx0:x1 + 1]
+    box_g = g[y0:y0 + bh, bx0:x1 + 1]
+    box_b = b[y0:y0 + bh, bx0:x1 + 1]
+    white = (box_r >= 185) & (box_g >= 185) & (box_b >= 185)
+    if int(white.sum()) < 6:
         return None
     ys, xs = np.where(white)
-    return {"cx": int(xs.mean()) + bx, "cy": int(ys.mean()) + y0 + 4,
+    return {"cx": int(xs.mean()) + bx0, "cy": int(ys.mean()) + y0,
             "panel": (x0, y0, x1, y1)}

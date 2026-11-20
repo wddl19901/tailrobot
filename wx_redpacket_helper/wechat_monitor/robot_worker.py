@@ -112,10 +112,12 @@ class RemarkTracker:
 class RobotWorker:
     def __init__(self, accounts: list[Account], strategy: str, mode: str,
                  threshold: int, log_cb=None, ocr_region=None,
-                 simulate_click=True, remark_name: str = ""):
+                 simulate_click=True, remark_name: str = "",
+                 unit_price: float = 0.0):
         self.accounts = accounts
         self.mode = mode
         self.threshold = threshold
+        self.unit_price = round(float(unit_price or 0), 2)
         self.log_cb = log_cb or (lambda m, p=False: None)
         self.state = RedPacketState()
         self.allocation = PollingAllocator(accounts[1:] or accounts, strategy)
@@ -144,6 +146,10 @@ class RobotWorker:
         self._last_side_pos = None
         self._side_streak = 0
         self._last_close_ts = 0.0
+        self._last_result_amt = None
+        self._last_result_ts = 0.0
+        self._dbg_dump_ts = 0.0
+        self._dbg_arr = None
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -153,8 +159,9 @@ class RobotWorker:
         self._thread.start()
         self.ocr.start()
         extra = f"，备注锁定: {self.remark.name}" if self.remark.name else ""
-        logger.info(f"Robot worker started threshold={self.threshold} mode={self.mode}{extra}")
-        self.log_cb(f"机器人已启动: 玩法={self.mode} 触发点数>={self.threshold}{extra}")
+        logger.info(f"Robot worker started threshold={self.threshold} mode={self.mode} unit_price={self.unit_price}{extra}")
+        price_note = f" 单价={self.unit_price}元/包" if self.unit_price > 0 else ""
+        self.log_cb(f"机器人已启动: 玩法={self.mode} 触发点数>={self.threshold}{price_note}{extra}")
 
     def stop(self):
         self._stop.set()
@@ -229,12 +236,17 @@ class RobotWorker:
         rc = detect_result_close(arr)
         if rc:
             self._last_signal_ts = now
+            if now - self._dbg_dump_ts >= 3.0:
+                self._dbg_dump_ts = now
+                self._dump_debug(arr, "result", marker=(self._rect[0] + rc["cx"], self._rect[1] + rc["cy"]))
             if now - self._last_close_ts >= 1.0:
                 self._last_close_ts = now
                 sx, sy = self._rect[0] + rc["cx"], self._rect[1] + rc["cy"]
                 self.clicker.click_point(sx, sy)
-                self.log_cb(f"检测到红包结果页，点×关闭 @({sx},{sy})")
+                self.log_cb(f"检测到红包结果页，点×关闭 @({sx},{sy}) 头带{rc['panel']}")
             return
+        elif self._dbg_dump_ts and now - self._dbg_dump_ts > 5:
+            self._dbg_dump_ts = 0.0
         ob = detect_open_button(arr)
         if ob:
             self._last_signal_ts = now
@@ -305,6 +317,8 @@ class RobotWorker:
             self._clicked = []
             self._cur_panel = None
             self._picks = 0
+            self.state.claimed_sum = 0.0
+            self._last_result_ts_key = None
         elif now - self._last_heartbeat_ts > 5:
             self._last_heartbeat_ts = now
             self.log_cb("监控中: 等待红包(卡片->弹窗->开钮 全自动)", False)
@@ -338,7 +352,7 @@ class RobotWorker:
         except Exception as e:
             logger.debug(f"close popup: {e}")
 
-    def _dump_debug(self, arr, tag):
+    def _dump_debug(self, arr, tag, marker=None):
         try:
             from PIL import Image, ImageDraw
             from ..utils.paths import app_dir
@@ -355,36 +369,49 @@ class RobotWorker:
                     dr.ellipse([lx - 20, ly - 20, lx + 20, ly + 20], outline="cyan", width=3)
                 except Exception:
                     pass
+            if marker:
+                lx, ly = marker[0] - self._rect[0], marker[1] - self._rect[1]
+                dr.rectangle([lx - 25, ly - 25, lx + 25, ly + 25], outline="lime", width=4)
             img.save(ddir / f"debug_{tag}_{time.strftime('%H%M%S')}.png")
         except Exception as e:
             logger.debug(f"debug dump failed: {e}")
 
     def _on_ocr_text(self, text: str):
         self.remark.on_text(text)
+        m = re.search(r"(\d{1,2})\s*/\s*(\d{1,2})", text)
+        claimed = int(m.group(1)) if m else None
         if "存入零钱" in text or "已存入" in text:
             dec = [float(n) for n in re.findall(r"\d+\.\d+", text) if 0.005 <= float(n) <= 100000]
             amt = max(dec) if dec else 0.0
-            if amt and amt != getattr(self, "_last_grab_amt", None):
-                self._last_grab_amt = amt
+            ts_key = int(time.time())
+            if amt and getattr(self, "_last_result_ts_key", None) != ts_key:
+                self._last_result_ts_key = ts_key
+                self.state.claimed_sum = round(self.state.claimed_sum + amt, 2)
                 who = self.accounts[0].name if self.accounts else "主号"
-                self.log_cb(f"查询到账: {who} 本次抢到 {amt:.2f}元 已存入零钱", True)
-        m = re.search(r"(\d{1,2})\s*/\s*(\d{1,2})", text)
+                self.log_cb(f"查询到账: {who} 本次抢到 {amt:.2f}元 已存入零钱 (累计{self.state.claimed_sum:.2f}元)", True)
         if m:
-            claimed, total = int(m.group(1)), int(m.group(2))
+            total = int(m.group(2))
             if not (0 < claimed <= total <= 99):
                 return
-            dec = [float(n) for n in re.findall(r"\d+\.\d+", text) if 0.01 <= float(n) <= 100000]
-            amount = max(dec) if dec else 0.0
+            if self.unit_price > 0:
+                amount = round(self.unit_price * total, 2)
+            else:
+                dec = [float(n) for n in re.findall(r"\d+\.\d+", text) if 0.01 <= float(n) <= 100000]
+                amount = max(dec) if dec else 0.0
             if (claimed, total, amount) != (self.state.claimed_count, self.state.total_count, self.state.total_amount):
-                self.state.update(total, claimed, amount)
+                self.state.update(total, claimed, amount, self.state.claimed_sum)
                 if total - claimed == 1 and amount > 0:
                     tail = amount - self.state.claimed_sum
-                    self.log_cb(f"等待尾包: 已领{claimed}/{total} 总额{amount:.2f} 尾包金额≈{max(tail,0.01):.2f}元")
+                    src = f"单价{self.unit_price}x{total}" if self.unit_price > 0 else "OCR"
+                    self.log_cb(f"等待尾包: 已领{claimed}/{total} 总额{amount:.2f}({src}) 已领合计{self.state.claimed_sum:.2f} 尾包≈{max(tail,0.01):.2f}元")
 
     def _on_tail(self, total: int, claimed: int, total_amount: float, claimed_sum: float):
         if self._stop.is_set() or not self._round_active:
             return
-        self.state.update(total, claimed, total_amount, claimed_sum)
+        if self.unit_price > 0:
+            total_amount = round(self.unit_price * total, 2)
+        cs = self.state.claimed_sum if self.state.claimed_sum > 0 else claimed_sum
+        self.state.update(total, claimed, total_amount, cs)
         if not self.state.check_tail():
             return
         self._decide_tail()

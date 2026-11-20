@@ -184,6 +184,14 @@ class MainWindow(QMainWindow):
         play_row.addWidget(self.point_input)
         lay.addLayout(play_row)
 
+        price_row = QHBoxLayout()
+        self.price_input = QLineEdit()
+        self.price_input.setPlaceholderText("红包单价 元/包(如0.5, 留空则按OCR识别总额)")
+        self.price_input.setMaxLength(8)
+        price_row.addWidget(QLabel("单价"))
+        price_row.addWidget(self.price_input, 1)
+        lay.addLayout(price_row)
+
         remark_row = QHBoxLayout()
         self.remark_input = QLineEdit()
         self.remark_input.setPlaceholderText("锁定备注人(选填，只比对他的点数)")
@@ -297,11 +305,17 @@ class MainWindow(QMainWindow):
             mode_map = ["standard", "sg", "niuniu"]
             mode = mode_map[self.mode_cb.currentIndex()]
             threshold = int(self.point_input.text().strip() or 7)
+            price_txt = self.price_input.text().strip()
+            try:
+                unit_price = round(float(price_txt), 2) if price_txt else 0.0
+            except ValueError:
+                unit_price = 0.0
             self.robot = RobotWorker(
                 accounts=subs, strategy=strategy, mode=mode, threshold=threshold,
                 log_cb=lambda m, p=False: self.log_signal.emit(m, p),
                 simulate_click=False if IS_WIN else True,
                 remark_name=self.remark_input.text().strip(),
+                unit_price=unit_price,
             )
             self.robot.start()
             self._set_running(True)
@@ -357,6 +371,11 @@ class MainWindow(QMainWindow):
         cfg["accounts"] = [{"name": a.name(), "idx": a.idx, "handle": a.handle, "pid": a.pid} for a in self.accounts]
         cfg["autostart"] = self.autostart_cb.isChecked()
         cfg["remark_name"] = self.remark_input.text().strip()
+        try:
+            price_txt = self.price_input.text().strip()
+            cfg["unit_price"] = round(float(price_txt), 2) if price_txt else 0.0
+        except ValueError:
+            cfg["unit_price"] = 0.0
         save_config(cfg)
 
     def _load_state(self):
@@ -374,6 +393,8 @@ class MainWindow(QMainWindow):
             self._inst_seq = max(self._inst_seq, acc.get("idx", 0))
         self.autostart_cb.setChecked(self.cfg.get("autostart", False))
         self.remark_input.setText(self.cfg.get("remark_name", ""))
+        price = self.cfg.get("unit_price", 0.0)
+        self.price_input.setText(f"{price:.2f}" if price else "")
         QTimer.singleShot(300, self._restore_wechat_instances)
 
     def _restore_wechat_instances(self):
