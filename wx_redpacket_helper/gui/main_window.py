@@ -75,32 +75,53 @@ class MainWindow(QMainWindow):
         self._login_check_timer.timeout.connect(self._check_wechat_login)
         self._login_check_timer.start(10000)
         self._last_login_warn = 0.0
+        self._logged_pids = set()
+        self._main_logged = False
 
     def _check_wechat_login(self):
         try:
             import win32gui
+            import win32process
         except Exception:
             return
+        login_titles, main_windows = [], []
+        def _cb(hwnd, _):
+            try:
+                if not win32gui.IsWindowVisible(hwnd):
+                    return
+                t = (win32gui.GetWindowText(hwnd) or "").strip()
+                cls = win32gui.GetClassName(hwnd)
+                if "登录微信" in t or ("登录" in t and "微信" in t):
+                    login_titles.append(t)
+                if cls in ("Qt51514QWindowIcon", "Qt6514QWindowIcon", "WeChatMainWndForPC") and t == "微信":
+                    main_windows.append(hwnd)
+            except Exception:
+                pass
+            return True
         try:
-            found = []
-            def _cb(hwnd, _):
-                try:
-                    if not win32gui.IsWindowVisible(hwnd):
-                        return
-                    t = (win32gui.GetWindowText(hwnd) or "").strip()
-                    if t and ("登录微信" in t or ("登录" in t and "微信" in t)):
-                        found.append(t)
-                except Exception:
-                    pass
-                return True
             win32gui.EnumWindows(_cb, None)
         except Exception:
             return
-        if found:
+        acc_pid = {a.pid: a.name() for a in self.accounts if a.pid}
+        for hwnd in main_windows:
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            except Exception:
+                continue
+            name = acc_pid.get(pid)
+            if name:
+                if pid not in self._logged_pids:
+                    self._logged_pids.add(pid)
+                    self.log_signal.emit(f"从号登录成功({name}, pid={pid})", True)
+            else:
+                if not self._main_logged:
+                    self._main_logged = True
+                    self.log_signal.emit(f"主号登录成功(pid={pid})", True)
+        if login_titles:
             import time as _t
             if _t.time() - self._last_login_warn > 60:
                 self._last_login_warn = _t.time()
-                self.log_signal.emit(f"检测到微信登录窗口({found[0]})：登录态已失效，请快速重新登录(数据已保留，通常免扫码)", True)
+                self.log_signal.emit(f"检测到微信登录窗口({login_titles[0]})：登录态已失效，请快速重新登录(数据已保留，通常免扫码)", True)
 
     def _apply_style(self):
         self.setStyleSheet(QSS)
@@ -319,7 +340,6 @@ class MainWindow(QMainWindow):
             )
             self.robot.start()
             self._set_running(True)
-            self.robot_ready.emit("机器人已启动")
         except Exception:
             err = traceback.format_exc()
             self.log_signal.emit("启动失败:\n" + err, False)
@@ -408,7 +428,6 @@ class MainWindow(QMainWindow):
             res = launch_instance(a.idx)
             if res["success"]:
                 a.pid = res["pid"]
-                self.robot_ready.emit(f"自动恢复微信登录态: {a.name()}")
             else:
                 self.robot_ready.emit(f"恢复微信失败: {a.name()} {res['note']}")
 

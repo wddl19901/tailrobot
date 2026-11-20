@@ -152,7 +152,5 @@ class OcrWorker:
         nums = [n for n in _NUM_RE.findall(text) if 0.01 <= float(n) <= 100000]
         decimals = [n for n in nums if "." in n]
         total_amount = float(max(decimals, key=float)) if decimals else 0.0
-        if total - claimed <= 1:
-            self.log_cb(f"剩余包数: {total - claimed} (已领{claimed}/{total} 总额{total_amount})")
         if self.on_tail:
             self.on_tail(total, claimed, total_amount, 0.0)

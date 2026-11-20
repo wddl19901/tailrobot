@@ -43,6 +43,39 @@ def find_wechat_hwnd():
         return None
 
 
+def find_wechat_windows():
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+    except Exception:
+        return []
+    out = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, ctypes.c_long)
+
+    def _cb(hwnd, _):
+        try:
+            if user32.IsWindowVisible(hwnd):
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, buf, 256)
+                if buf.value == "微信":
+                    cls = ctypes.create_unicode_buffer(256)
+                    user32.GetClassNameW(hwnd, cls, 256)
+                    if cls.value in ("Qt51514QWindowIcon", "Qt6514QWindowIcon", "WeChatMainWndForPC"):
+                        out.append(hwnd)
+        except Exception:
+            pass
+        return True
+    try:
+        user32.EnumWindows(WNDENUMPROC(_cb), 0)
+    except Exception:
+        pass
+    single = find_wechat_hwnd()
+    if single and single not in out:
+        out.append(single)
+    return out
+
+
 def get_window_rect(hwnd, user32):
     import ctypes
     from ctypes import wintypes
@@ -149,10 +182,16 @@ class RobotWorker:
         self._last_result_amt = None
         self._last_result_ts = 0.0
         self._state_fresh_ts = 0.0
+        self._tail_mark = None
         self._last_card_pos = None
-        self._last_result_seen_ts = 0.0
+        self._last_card_log_key = None
         self._last_reopen_ts = 0.0
-        self._last_hold_log_ts = 0.0
+        self._last_result_gone_ts = 0.0
+        self._last_pick_ts = 0.0
+        self._main_claimed_sum = 0.0
+        self._no_win_warned = False
+        self._win_switched_ts = 0.0
+        self._last_reopen_done_ts = 0.0
         self._dbg_dump_ts = 0.0
         self._dbg_arr = None
 
@@ -187,24 +226,6 @@ class RobotWorker:
                 logger.error(f"watchdog tick error: {e}")
             time.sleep(0.1 + random.uniform(0, 0.05))
 
-    def _wechat_mon(self, sct):
-        h = find_wechat_hwnd()
-        if not h:
-            return None
-        try:
-            import ctypes
-            user32 = ctypes.windll.user32
-            rect = get_window_rect(h, user32)
-        except Exception:
-            return None
-        if rect[2] <= rect[0] or rect[3] <= rect[1]:
-            return None
-        m = {"left": rect[0], "top": rect[1],
-             "width": rect[2] - rect[0], "height": rect[3] - rect[1]}
-        if m["left"] < 0:
-            m["left"] = 0
-        return m
-
     def _is_clicked(self, sx, sy, threshold=30):
         for cx, cy in self._clicked:
             if abs(sx - cx) < threshold and abs(sy - cy) < threshold:
@@ -218,30 +239,68 @@ class RobotWorker:
 
     def _tick(self, sct):
         now = time.time()
-        h = find_wechat_hwnd()
-        if h:
+        wins = find_wechat_windows()
+        if wins:
+            self._no_win_warned = False
             import ctypes
             user32 = ctypes.windll.user32
-            if now - self._last_fg_ts > 0.5:
-                was_min = ensure_window_foreground(h, user32)
-                if was_min:
-                    self.log_cb("检测到微信窗口被最小化，已自动恢复并置前", False)
-                self._last_fg_ts = now
-            m = self._wechat_mon(sct)
-            if m:
+            order = [w for w in wins if w == self._hwnd] + [w for w in wins if w != self._hwnd]
+            active = None
+            for i, h in enumerate(order):
+                if now - self._last_fg_ts > 0.5:
+                    was_min = ensure_window_foreground(h, user32)
+                    if was_min:
+                        self.log_cb("检测到微信窗口被最小化，已自动恢复并置前", False)
+                    self._last_fg_ts = now
+                m = self._wechat_mon2(h, user32)
+                if not m:
+                    continue
                 self._rect = (m["left"], m["top"])
                 arr = np.asarray(sct.grab(m))
-                self._process(arr, now)
-                return
-        if now - self._last_heartbeat_ts > 5:
-            self._last_heartbeat_ts = now
+                if self._process(arr, now, i == 0):
+                    active = h
+                    break
+                time.sleep(0.02)
+            if active is None:
+                active = order[0]
+                self._last_fg_ts = 0.0
+            if active != self._hwnd:
+                self._hwnd = active
+                self._win_switched_ts = now
+                self._last_signal_ts = now
+                self._clicked = []
+                self._last_card_pos = None
+                self._last_card_log_key = None
+                self._last_side_pos = None
+                self._side_streak = 0
+                self._last_close_ts = 0.0
+                self._last_result_gone_ts = 0.0
+                self._last_result_amt = None
+                self._last_result_ts = 0.0
+                if now - getattr(self, "_last_switch_log_ts", 0) >= 10:
+                    self._last_switch_log_ts = now
+                    self.log_cb(f"多窗口: 已锁定含红包的微信窗口(共{len(wins)}个)", False)
+            return
+        self._hwnd = None
+        if not self._no_win_warned:
+            self._no_win_warned = True
             self.log_cb("监控中: 未找到微信窗口(请确认微信已登录且窗口未最小化)", False)
 
-    def _process(self, arr, now):
+    def _wechat_mon2(self, h, user32):
+        try:
+            rect = get_window_rect(h, user32)
+        except Exception:
+            return None
+        if rect[2] <= rect[0] or rect[3] <= rect[1]:
+            return None
+        return {"left": max(0, rect[0]), "top": rect[1],
+                "width": rect[2] - rect[0], "height": rect[3] - rect[1]}
+
+    def _process(self, arr, now, primary=False):
         rc = detect_result_close(arr)
         if rc:
             self._last_signal_ts = now
-            self._last_result_seen_ts = now
+            self._last_result_gone_ts = 0.0
             if now - self._dbg_dump_ts >= 3.0:
                 self._dbg_dump_ts = now
                 self._dump_debug(arr, "result", marker=(self._rect[0] + rc["cx"], self._rect[1] + rc["cy"]))
@@ -250,13 +309,18 @@ class RobotWorker:
                 sx, sy = self._rect[0] + rc["cx"], self._rect[1] + rc["cy"]
                 self.clicker.click_point(sx, sy)
                 self.clicker.press_escape()
-                self.log_cb(f"检测到红包结果页, 点×+ESC关闭 @({sx},{sy}) 头带{rc['panel']}")
-            return
+            return True
         elif self._dbg_dump_ts and now - self._dbg_dump_ts > 5:
             self._dbg_dump_ts = 0.0
-        if self._last_result_seen_ts and now - self._last_result_seen_ts < 2.0:
-            self._last_result_seen_ts = 0.0
-            self._reopen_check(now)
+        if not rc and self._last_close_ts:
+            self._last_result_gone_ts = self._last_result_gone_ts or now
+            if now - self._last_result_gone_ts < 1.2:
+                if now - self._last_close_ts < 2.5:
+                    return True
+                self._last_result_gone_ts = 0.0
+                self._last_close_ts = 0.0
+                self._reopen_check(now)
+            return True
         ob = detect_open_button(arr)
         if ob:
             self._last_signal_ts = now
@@ -276,10 +340,7 @@ class RobotWorker:
                 self.log_cb(f"红包弹窗已打开(面板{panel}) 开钮@{sx},{sy}", False)
                 self._dump_debug(arr, "popup")
             if self._tail_hold():
-                if now - self._last_hold_log_ts > 5:
-                    self._last_hold_log_ts = now
-                    self.log_cb("仅剩尾包, 主号不开, 等待重新点卡片精确计算尾包后再判断从号", False)
-                return
+                return True
             if not self._is_clicked(sx, sy) and now - self._last_click_ts >= 0.6:
                 delay = random.uniform(0.05, 0.15)
                 time.sleep(delay)
@@ -292,24 +353,27 @@ class RobotWorker:
                 self.log_cb(f"{who} 点开抢包执行 @({sx},{sy}) (共抢{self._picks}次)", True)
                 time.sleep(random.uniform(0.4, 0.6))
                 self._close_popup()
-            return
+            return True
         cards = detect_red_packet_cards(arr)
         if cards:
             if now - self._last_close_ts < 2.5:
-                return
+                return True
             self._last_signal_ts = now
             newest = cards[-1]
             sx, sy = self._rect[0] + newest["cx"], self._rect[1] + newest["cy"]
+            key = (sx // 16, sy // 16, len(cards))
             if now - self._last_card_click_ts >= 0.8:
                 self._last_card_click_ts = now
-                self.log_cb(f"检测到红包卡片{len(cards)}个，点击最新@{sx},{sy} (尺寸{newest['w']}x{newest['h']})")
-                self._dump_debug(arr, "cards")
+                if key != self._last_card_log_key:
+                    self._last_card_log_key = key
+                    self.log_cb(f"检测到红包卡片{len(cards)}个，点击最新@{sx},{sy} (尺寸{newest['w']}x{newest['h']})")
+                    self._dump_debug(arr, "cards")
                 delay = random.uniform(0.05, 0.15)
                 time.sleep(delay)
                 self._record_click(sx, sy)
                 self._last_card_pos = (sx, sy)
                 self.clicker.click_point(sx, sy)
-            return
+            return True
         side = detect_sidebar_redpack(arr)
         if side:
             self._last_side_ts = now
@@ -325,13 +389,15 @@ class RobotWorker:
                 sy = self._rect[1] + side["cy"]
                 self.log_cb(f"会话列表发现红包预览@(窗口坐标 {side['cx']},{side['cy']})，自动打开该群")
                 self.clicker.click_point(sx, sy)
-            return
-        if now - self._last_scroll_ts > 12:
-            self._last_scroll_ts = now
-            self._scroll_sidebar(arr)
+            return True
+        if primary and not self._round_active and now - self._last_close_ts > 8:
+            if now - self._last_scroll_ts > 12:
+                self._last_scroll_ts = now
+                self._scroll_sidebar(arr)
         if self._round_active and now - self._last_signal_ts > 4:
             self._round_active = False
-            self.log_cb(f"红包轮次结束，本轮共抢{self._picks}次", self._picks > 0)
+            who = self.accounts[0].name if self.accounts else "主号"
+            self.log_cb(f"{who} 本轮结束: 共抢{self._picks}个 合计{self._main_claimed_sum:.2f}元", self._picks > 0)
             self._clicked = []
             self._cur_panel = None
             self._picks = 0
@@ -340,10 +406,11 @@ class RobotWorker:
             self.state.total_amount = 0.0
             self.state.claimed_count = 0
             self._state_fresh_ts = 0.0
-            self._last_result_ts_key = None
-        elif now - self._last_heartbeat_ts > 5:
-            self._last_heartbeat_ts = now
-            self.log_cb("监控中: 等待红包(卡片->弹窗->开钮 全自动)", False)
+            self._main_claimed_sum = 0.0
+            self._tail_mark = None
+            self._last_card_pos = None
+            self._last_card_log_key = None
+        return False
 
     def _scroll_sidebar(self, arr):
         try:
@@ -363,7 +430,6 @@ class RobotWorker:
             user32.SetCursorPos(x, y)
             time.sleep(0.03)
             user32.mouse_event(0x0800, 0, -120, 0)
-            self.log_cb("已滚动会话列表(检查其他群红包)", False)
         except Exception as e:
             logger.debug(f"scroll sidebar: {e}")
 
@@ -381,17 +447,23 @@ class RobotWorker:
         return fresh and self.state.remaining == 1 and self.state.total_amount > 0
 
     def _reopen_check(self, now):
-        if not self._tail_hold() or not self._last_card_pos:
+        if self._tail_mark is not None or not self._last_card_pos:
             return
-        if now - self._last_reopen_ts < 12:
+        if not self._tail_hold() or not self.state.total_count:
+            return
+        if now - self._last_reopen_ts < 6:
             return
         self._last_reopen_ts = now
-        self.log_cb("尾包精算: ESC关闭结果页, 重新点开红包卡片查剩余包数", False)
+        self.log_cb("尾包精算: 重新点红包卡片查剩余包数", False)
         self.clicker.press_escape()
         time.sleep(0.5)
         sx, sy = self._last_card_pos
         self._record_click(sx, sy)
         self.clicker.click_point(sx, sy)
+
+    def _mark_tail_no_grab(self, tail, points):
+        self._tail_mark = {"ts": time.time(), "amount": round(tail, 2), "points": points}
+        self.log_cb(f"仅剩1包({tail:.2f}元) 不抢, 永久标记跳过", False)
 
     def _dump_debug(self, arr, tag, marker=None):
         try:
@@ -424,12 +496,14 @@ class RobotWorker:
         if "存入零钱" in text or "已存入" in text:
             dec = [float(n) for n in re.findall(r"\d+\.\d+", text) if 0.005 <= float(n) <= 100000]
             amt = max(dec) if dec else 0.0
-            ts_key = int(time.time())
-            if amt and getattr(self, "_last_result_ts_key", None) != ts_key:
-                self._last_result_ts_key = ts_key
-                self.state.claimed_sum = round(self.state.claimed_sum + amt, 2)
+            if amt and time.time() - self._last_pick_ts >= 2:
+                self._last_pick_ts = time.time()
+                self._main_claimed_sum = round(self._main_claimed_sum + amt, 2)
+                self.state.claimed_sum = self._main_claimed_sum
                 who = self.accounts[0].name if self.accounts else "主号"
-                self.log_cb(f"查询到账: {who} 本次抢到 {amt:.2f}元 已存入零钱 (累计{self.state.claimed_sum:.2f}元)", True)
+                rem = self.state.remaining if self.state.total_count else 0
+                extra = f" 还剩{rem}个包未抢(等待中)" if rem > 1 else ("" if rem == 0 else f" 剩尾包")
+                self.log_cb(f"{who}抢了红包({amt:.2f}元){extra}", True)
         if m:
             total = int(m.group(2))
             if not (0 < claimed <= total <= 99):
@@ -440,19 +514,17 @@ class RobotWorker:
                 dec = [float(n) for n in re.findall(r"\d+\.\d+", text) if 0.01 <= float(n) <= 100000]
                 amount = max(dec) if dec else 0.0
             if (claimed, total, amount) != (self.state.claimed_count, self.state.total_count, self.state.total_amount):
-                self.state.update(total, claimed, amount, self.state.claimed_sum)
+                self.state.update(total, claimed, amount, self._main_claimed_sum)
                 self._state_fresh_ts = time.time()
-                if total - claimed == 1 and amount > 0:
-                    tail = amount - self.state.claimed_sum
-                    src = f"单价{self.unit_price}x{total}" if self.unit_price > 0 else "OCR"
-                    self.log_cb(f"等待尾包: 已领{claimed}/{total} 总额{amount:.2f}({src}) 已领合计{self.state.claimed_sum:.2f} 尾包≈{max(tail,0.01):.2f}元, 主号停手等从号精确判断")
+                if self.state.remaining == 1 and amount > 0 and self._tail_mark is None:
+                    self._reopen_check(time.time())
 
     def _on_tail(self, total: int, claimed: int, total_amount: float, claimed_sum: float):
         if self._stop.is_set() or not self._round_active:
             return
         if self.unit_price > 0:
             total_amount = round(self.unit_price * total, 2)
-        cs = self.state.claimed_sum if self.state.claimed_sum > 0 else claimed_sum
+        cs = self._main_claimed_sum if self._main_claimed_sum > 0 else claimed_sum
         self.state.update(total, claimed, total_amount, cs)
         self._state_fresh_ts = time.time()
         if not self.state.check_tail():
@@ -460,46 +532,50 @@ class RobotWorker:
         self._decide_tail()
 
     def _decide_tail(self):
+        if self._tail_mark is not None:
+            return
         tail = self.state.calc_tail_amount()
         tail_points = get_points(self.mode, tail)
-        digits = sum(int(c) for c in f"{round(tail, 2):.2f}".replace(".", ""))
-        lines = [f"等待尾包: 尾包金额={tail:.2f}元 各位相加={digits} 尾包点数={tail_points}"]
         if self.remark.name and self.remark.active():
             rp = get_points(self.mode, self.remark.last_amount)
-            lines.append(f"备注人[{self.remark.name}]抢了{self.remark.last_amount:.2f}元 点数={rp}")
             if tail_points > rp:
-                lines.append(f"尾包{tail_points}点 > 备注人{rp}点，秒抢!")
-                self._pick(lines, tail_points)
+                self._pick(tail, tail_points)
             else:
-                lines.append(f"尾包{tail_points}点 <= 备注人{rp}点，不抢！")
-                self.log_cb(" ".join(lines), False)
+                self._mark_tail_no_grab(tail, tail_points)
+                return
         else:
             if tail_points >= self.threshold:
-                lines.append(f"达到预期标准(>={self.threshold}点)，秒抢!")
-                self._pick(lines, tail_points)
+                self._pick(tail, tail_points)
             else:
-                lines.append(f"相加={digits} 点数={tail_points} < {self.threshold}，没达到预期标准，不抢！")
-                self.log_cb(" ".join(lines), False)
+                self._mark_tail_no_grab(tail, tail_points)
+                return
 
-    def _pick(self, lines, tail_points):
+    def _pick(self, tail, tail_points):
         if time.time() - self._last_click_ts < 0.6:
             return
         sub = self.allocation.next_account()
         if not sub:
-            self.log_cb(" ".join(lines + ["无可用从账号，放弃"]), False)
+            self.log_cb(f"仅剩1包({tail:.2f}元) 无可用从号，放弃", False)
             return
         self._last_click_ts = time.time()
         self._picks += 1
-        self.log_cb(" ".join(lines + [f"从号[{sub.name}] 尾包{tail_points}点秒抢执行 (共抢{self._picks}次)"]), True)
+        self.log_cb(f"从号[{sub.name}]尾包{tail:.2f}元({tail_points}点) 秒抢 (共抢{self._picks}次)", True)
         self._click_open_button()
 
     def _click_open_button(self):
         try:
             import mss as _mss
+            import ctypes
+            user32 = ctypes.windll.user32
             sct = _mss.mss()
-            m = self._wechat_mon(sct) or {"left": 0, "top": 0,
-                                          "width": sct.monitors[0]["left"] + sct.monitors[0]["right"],
-                                          "height": sct.monitors[0]["top"] + sct.monitors[0]["bottom"]}
+            h = self._hwnd or find_wechat_hwnd()
+            m = self._wechat_mon2(h, user32) if h else None
+            if not m:
+                mon = sct.monitors[0]
+                m = {"left": 0, "top": 0,
+                     "width": mon["right"] - mon["left"],
+                     "height": mon["bottom"] - mon["top"]}
+            self._rect = (m["left"], m["top"])
             arr = np.asarray(sct.grab(m))
             ob = detect_open_button(arr)
             if ob:
