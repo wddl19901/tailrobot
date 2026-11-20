@@ -129,6 +129,18 @@ def detect_open_button(arr):
     if rows.size == 0:
         return None
     y_min, y_max = int(rows[0]), int(rows[-1])
+    pw = x_max - x_min
+    ph = y_max - y_min
+    # 真实红包弹窗是居中、足够大的红色模态；排除侧栏色块/顶栏误判
+    if pw < int(W * 0.20) or ph < int(H * 0.30):
+        return None
+    if x_min < int(W * 0.12) or x_max > int(W * 0.92):
+        return None
+    if y_min < int(H * 0.08):
+        return None
+    fill = int(red_mask[y_min:y_max + 1, x_min:x_max + 1].sum()) / max(pw * ph, 1)
+    if fill < 0.35:
+        return None
     gold = (r >= 220) & (r <= 250) & (g >= 180) & (g <= 220) & (b >= 130) & (b <= 175) & (~red_mask)
     zone = np.zeros_like(gold)
     zone[y_min:y_max + 1, x_min:x_max + 1] = True
@@ -148,7 +160,5 @@ def detect_open_button(arr):
         if len(by) > 30:
             return {"cx": int(bx.mean()), "cy": int(by.mean()),
                     "panel": (x_min, y_min, x_max, y_max)}
-    pw = x_max - x_min
-    ph = y_max - y_min
-    return {"cx": x_min + pw // 2, "cy": y_min + int(ph * 0.75),
+    return {"cx": x_min + pw // 2, "cy": y_min + int(ph * 0.72),
             "panel": (x_min, y_min, x_max, y_max), "estimated": True}

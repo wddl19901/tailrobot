@@ -51,6 +51,45 @@ def get_window_rect(hwnd, user32):
     return (rect.left, rect.top, rect.right, rect.bottom)
 
 
+def window_state(hwnd, user32):
+    import ctypes
+    if not hwnd:
+        return (False, 0)
+    minimized = user32.IsIconic(hwnd)
+    fg = user32.GetForegroundWindow()
+    return bool(minimized), fg
+
+
+def ensure_window_foreground(hwnd, user32):
+    """恢复最小化 + 切到前台，返回是否发生最小化恢复"""
+    if not hwnd:
+        return False
+    import ctypes
+    from ctypes import wintypes
+    SW_SHOWNORMAL = 1
+    SW_SHOW = 5
+    SW_RESTORE = 9
+    SWP_NOSIZE = 0x0001
+    SWP_NOMOVE = 0x0002
+    SWP_NOZORDER = 0x0004
+    SWP_SHOWWINDOW = 0x0040
+    was_min = False
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, SW_RESTORE)
+        time.sleep(0.06)
+        was_min = True
+    else:
+        user32.ShowWindow(hwnd, SW_SHOWNORMAL)
+    try:
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+    user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW)
+    time.sleep(0.02)
+    return was_min
+
+
 class RemarkTracker:
     """跟踪指定备注人的领取金额，用于尾包比较"""
 
@@ -110,6 +149,10 @@ class RobotWorker:
         self._round_active = False
         self._last_signal_ts = 0.0
         self._clicked = []
+        self._last_fg_ts = 0.0
+        self._last_fg_was_min = False
+        self._last_side_pos = None
+        self._side_streak = 0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -172,12 +215,22 @@ class RobotWorker:
 
     def _tick(self, sct):
         now = time.time()
-        m = self._wechat_mon(sct)
-        if m:
-            self._rect = (m["left"], m["top"])
-            arr = np.asarray(sct.grab(m))
-            self._process(arr, now)
-        elif now - self._last_heartbeat_ts > 5:
+        h = find_wechat_hwnd()
+        if h:
+            import ctypes
+            user32 = ctypes.windll.user32
+            if now - self._last_fg_ts > 0.5:
+                was_min = ensure_window_foreground(h, user32)
+                if was_min:
+                    self.log_cb("检测到微信窗口被最小化，已自动恢复并置前", False)
+                self._last_fg_ts = now
+            m = self._wechat_mon(sct)
+            if m:
+                self._rect = (m["left"], m["top"])
+                arr = np.asarray(sct.grab(m))
+                self._process(arr, now)
+                return
+        if now - self._last_heartbeat_ts > 5:
             self._last_heartbeat_ts = now
             self.log_cb("监控中: 未找到微信窗口(请确认微信已登录且窗口未最小化)", False)
 
@@ -220,7 +273,13 @@ class RobotWorker:
         side = detect_sidebar_redpack(arr)
         if side:
             self._last_side_ts = now
-            if now - self._last_side_click_ts >= 1.0:
+            key = (side["cx"] // 16, side["cy"] // 16)
+            if key == self._last_side_pos:
+                self._side_streak += 1
+            else:
+                self._last_side_pos = key
+                self._side_streak = 0
+            if self._side_streak < 8 and now - self._last_side_click_ts >= 2.0:
                 self._last_side_click_ts = now
                 sx = self._rect[0] + min(side["cx"] + 30, int(arr.shape[1] * 0.30))
                 sy = self._rect[1] + side["cy"]
