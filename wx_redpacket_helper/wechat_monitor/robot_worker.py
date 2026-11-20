@@ -51,23 +51,12 @@ def get_window_rect(hwnd, user32):
     return (rect.left, rect.top, rect.right, rect.bottom)
 
 
-def window_state(hwnd, user32):
-    import ctypes
-    if not hwnd:
-        return (False, 0)
-    minimized = user32.IsIconic(hwnd)
-    fg = user32.GetForegroundWindow()
-    return bool(minimized), fg
-
-
 def ensure_window_foreground(hwnd, user32):
     """恢复最小化 + 切到前台，返回是否发生最小化恢复"""
     if not hwnd:
         return False
     import ctypes
-    from ctypes import wintypes
     SW_SHOWNORMAL = 1
-    SW_SHOW = 5
     SW_RESTORE = 9
     SWP_NOSIZE = 0x0001
     SWP_NOMOVE = 0x0002
@@ -149,6 +138,7 @@ class RobotWorker:
         self._round_active = False
         self._last_signal_ts = 0.0
         self._clicked = []
+        self._cur_panel = None
         self._last_fg_ts = 0.0
         self._last_fg_was_min = False
         self._last_side_pos = None
@@ -238,10 +228,20 @@ class RobotWorker:
         ob = detect_open_button(arr)
         if ob:
             self._last_signal_ts = now
+            panel = ob["panel"]
+            if self._cur_panel is None:
+                self._cur_panel = panel
+                self._picks = 0
+                self._clicked = []
+            elif panel != self._cur_panel:
+                self._cur_panel = panel
+                self._picks = 0
+                self._clicked = []
+                self._last_click_ts = 0.0
             sx, sy = self._rect[0] + ob["cx"], self._rect[1] + ob["cy"]
             if not self._round_active:
                 self._round_active = True
-                self.log_cb(f"红包弹窗已打开(面板{ob['panel']}) 开钮@{sx},{sy}", False)
+                self.log_cb(f"红包弹窗已打开(面板{panel}) 开钮@{sx},{sy}", False)
                 self._dump_debug(arr, "popup")
             if not self._is_clicked(sx, sy) and now - self._last_click_ts >= 0.6:
                 delay = random.uniform(0.05, 0.15)
@@ -292,6 +292,9 @@ class RobotWorker:
         if self._round_active and now - self._last_signal_ts > 4:
             self._round_active = False
             self.log_cb(f"红包轮次结束，本轮共抢{self._picks}次", self._picks > 0)
+            self._clicked = []
+            self._cur_panel = None
+            self._picks = 0
         elif now - self._last_heartbeat_ts > 5:
             self._last_heartbeat_ts = now
             self.log_cb("监控中: 等待红包(卡片->弹窗->开钮 全自动)", False)
