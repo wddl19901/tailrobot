@@ -1,6 +1,7 @@
 import platform
 import sys
 import threading
+import time
 import webbrowser
 
 from PyQt6.QtWidgets import (
@@ -139,23 +140,13 @@ class MainWindow(QMainWindow):
 
         buy_row = QHBoxLayout()
         self.pkg_cb = QComboBox()
-        for label, price in gateway.PACKAGES:
+        for label, price, _days in gateway.PACKAGES:
             self.pkg_cb.addItem(f"{label}  ({price}U)", label)
         self.buy_btn = QPushButton("获取充值网页")
         self.buy_btn.clicked.connect(self._on_get_pay)
         buy_row.addWidget(self.pkg_cb, 1)
         buy_row.addWidget(self.buy_btn)
         lay.addLayout(buy_row)
-
-        act_row = QHBoxLayout()
-        self.code_input = QLineEdit()
-        self.code_input.setPlaceholderText("粘贴卡密")
-        self.act_btn = QPushButton("手动激活")
-        self.act_btn.setFixedWidth(84)
-        self.act_btn.clicked.connect(self._on_manual_activate)
-        act_row.addWidget(self.code_input, 1)
-        act_row.addWidget(self.act_btn)
-        lay.addLayout(act_row)
 
         grp.setLayout(lay)
         return grp
@@ -254,38 +245,34 @@ class MainWindow(QMainWindow):
 
     def _on_get_pay(self):
         label = self.pkg_cb.currentData()
+        price = next(p for l, p, _ in gateway.PACKAGES if l == label)
+        order_id = f"TAILROBOT_{int(time.time())}_{self._inst_seq}"
         try:
-            self.robot_ready.emit(f"创建订单: {label}")
-            order = gateway.create_order(label)
-            pay_url = order.get("payUrl", "")
-            pay_id = order.get("payId", "")
+            self.robot_ready.emit(f"创建订单: {label} ({price}U) 订单号 {order_id}")
+            data = gateway.create_order(price, order_id)
+            pay_url = data.get("payUrl", "")
+            pay_id = data.get("payId", "")
             if pay_url:
                 webbrowser.open(pay_url)
             if pay_id:
                 self._poll_stop = threading.Event()
                 self.auth.start_order_polling(
                     pay_id,
-                    tick_cb=lambda ev: self.robot_ready.emit(f"到账检测: {ev}"),
+                    label,
+                    tick_cb=lambda ev: self.robot_ready.emit(self._poll_msg(ev)),
                     stop_event=self._poll_stop,
                 )
-                self.robot_ready.emit("已打开充值网页，后台每4秒检测到账")
+                self.robot_ready.emit("已打开充值网页，请按页面显示的精准USDT金额支付(TRC20)，后台每4秒检测到账")
         except Exception as e:
             QMessageBox.critical(self, "下单失败", str(e))
 
-    def _on_manual_activate(self):
-        code = self.code_input.text().strip()
-        if not code:
-            QMessageBox.information(self, "提示", "请输入卡密")
-            return
-        try:
-            self.auth.activate_code(code)
-            self._refresh_auth()
-            self.code_input.clear()
-            self.robot_ready.emit("手动激活成功")
-        except AuthError as e:
-            QMessageBox.warning(self, "激活失败", str(e))
-        except Exception as e:
-            QMessageBox.critical(self, "激活失败", str(e))
+    @staticmethod
+    def _poll_msg(ev: str) -> str:
+        if ev == "paid":
+            return "检测到到账，授权已解锁"
+        if ev == "expired":
+            return "订单已过期，请重新发起支付"
+        return f"到账检测: {ev}"
 
     def _on_autostart(self, checked: bool):
         try:
@@ -345,7 +332,7 @@ class MainWindow(QMainWindow):
         self.auth_state_lbl.setText(state)
         if state == "已过期":
             self.auth_state_lbl.setStyleSheet("font-weight:bold;font-size:13px;color:#ff5252;background:transparent;border:none;")
-            self.auth_time_lbl.setText("请充值或激活")
+            self.auth_time_lbl.setText("请充值")
         else:
             h = int(remain // 3600)
             m = int((remain % 3600) // 60)
