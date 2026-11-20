@@ -96,12 +96,20 @@ class AutoClicker:
             logger.info(f"屏幕点击 ({x},{y})")
             return True
 
-    def press_escape(self):
+    def press_escape(self, hwnd=None):
         with self._lock:
             if self.simulate_only:
                 logger.info("[SIMULATE] 跳过 ESC")
                 return True
             if win32api:
+                if hwnd:
+                    try:
+                        import ctypes
+                        user32 = ctypes.windll.user32
+                        user32.SetForegroundWindow(hwnd)
+                        time.sleep(0.05)
+                    except Exception:
+                        pass
                 win32api.keybd_event(0x1B, 0, 0, 0)
                 win32api.keybd_event(0x1B, 0, 0x0002, 0)
             elif pyautogui:

@@ -314,7 +314,7 @@ class RobotWorker:
                 self._last_close_ts = now
                 sx, sy = self._rect[0] + rc["cx"], self._rect[1] + rc["cy"]
                 self.clicker.click_point(sx, sy)
-                self.clicker.press_escape()
+                self.clicker.press_escape(self._hwnd)
             return True
         elif self._dbg_dump_ts and now - self._dbg_dump_ts > 5:
             self._dbg_dump_ts = 0.0
@@ -344,14 +344,14 @@ class RobotWorker:
             if stale and now - self._ob_first_ts > 12:
                 who = self.accounts[0].name if self.accounts else "主号"
                 self.log_cb(f"{who} 详情页{now - self._ob_first_ts:.0f}秒无OCR数据，放弃本包", False)
-                self.clicker.press_escape()
+                self.clicker.press_escape(self._hwnd)
                 time.sleep(0.3)
                 self._reset_round()
                 return True
             if self._tail_hold():
                 return True
             if self._tail_mark is not None and now - self._last_close_ts >= 0.5:
-                self.clicker.press_escape()
+                self.clicker.press_escape(self._hwnd)
                 self._last_close_ts = now
                 return True
             sx, sy = self._rect[0] + ob["cx"], self._rect[1] + ob["cy"]
@@ -462,7 +462,7 @@ class RobotWorker:
     def _close_popup(self):
         try:
             self._last_close_ts = time.time()
-            self.clicker.press_escape()
+            self.clicker.press_escape(self._hwnd)
         except Exception as e:
             logger.debug(f"close popup: {e}")
 
