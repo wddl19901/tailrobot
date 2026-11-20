@@ -391,13 +391,14 @@ class RobotWorker:
         side = detect_sidebar_redpack(arr)
         if side and not self._round_active:
             self._last_side_ts = now
-            key = (side["cx"] // 16, side["cy"] // 16)
-            if key == self._last_side_pos:
-                self._side_streak += 1
-            else:
+            key = (side["cx"] // 48, side["cy"] // 48)
+            if key != self._last_side_pos:
                 self._last_side_pos = key
                 self._side_streak = 0
-            if self._side_streak < 8 and now - self._last_side_click_ts >= 4.0:
+            self._side_streak += 1
+            if self._side_streak >= 6:
+                return True
+            if now - self._last_side_click_ts >= 4.0:
                 self._last_side_click_ts = now
                 sx = self._rect[0] + min(side["cx"] + 30, int(arr.shape[1] * 0.30))
                 sy = self._rect[1] + side["cy"]

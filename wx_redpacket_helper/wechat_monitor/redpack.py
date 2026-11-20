@@ -34,12 +34,15 @@ def _regions(mask, min_h, min_w):
         cols = np.where(mask[r0:r1].sum(axis=0) > 2)[0]
         if cols.size == 0:
             continue
-        c0, c1 = int(cols[0]), int(cols[-1])
-        rw = c1 - c0
-        if rw < min_w:
-            continue
-        res.append({"cx": c0 + rw // 2, "cy": r0 + rh // 2,
-                    "x": c0, "y": r0, "w": rw, "h": rh})
+        gaps = np.where(np.diff(cols) > 12)[0]
+        segs = np.split(cols, gaps + 1)
+        for c in segs:
+            c0, c1 = int(c[0]), int(c[-1])
+            rw = c1 - c0
+            if rw < min_w:
+                continue
+            res.append({"cx": c0 + rw // 2, "cy": r0 + rh // 2,
+                        "x": c0, "y": r0, "w": rw, "h": rh})
     return res
 
 
@@ -48,8 +51,8 @@ def detect_red_packet_cards(arr):
     if arr is None or arr.size == 0 or arr.ndim != 3 or arr.shape[2] < 3:
         return []
     r, g, b = _channels(arr)
-    card = (r >= 240) & (r <= 255) & (g >= 140) & (g <= 175) & (b >= 40) & (b <= 80)
-    icon = (r >= 200) & (r <= 255) & (g >= 55) & (g <= 120) & (b >= 30) & (b <= 95)
+    card = (r >= 200) & (g >= 140) & (g <= 225) & (b <= 60)
+    icon = (r >= 185) & (r <= 255) & (g >= 45) & (g <= 140) & (b >= 25) & (b <= 110)
     combined = card | icon
     H, W = combined.shape
     start_x = int(W * 0.28)
@@ -59,13 +62,13 @@ def detect_red_packet_cards(arr):
     for pkt in regions:
         sub = combined[pkt["y"]:pkt["y"] + pkt["h"], pkt["x"]:pkt["x"] + pkt["w"]]
         px = int(sub.sum())
-        if px < 2000:
+        if px < 600:
             continue
-        if px / max(pkt["w"] * pkt["h"], 1) < 0.5:
+        if px / max(pkt["w"] * pkt["h"], 1) < 0.35:
             continue
-        if pkt["w"] > int(W * 0.30):
+        if pkt["w"] / max(pkt["h"], 1) > 1.6:
             continue
-        if int(icon[pkt["y"]:pkt["y"] + pkt["h"], pkt["x"]:pkt["x"] + pkt["w"]].sum()) < 200:
+        if int(icon[pkt["y"]:pkt["y"] + pkt["h"], pkt["x"]:pkt["x"] + pkt["w"]].sum()) < 30:
             continue
         out.append(pkt)
     out.sort(key=lambda p: p["cy"])
@@ -81,10 +84,10 @@ def detect_sidebar_redpack(arr):
     icon = (r >= 200) & (r <= 255) & (g >= 55) & (g <= 120) & (b >= 30) & (b <= 95)
     mask = card | icon
     H, W = mask.shape
-    mask[:, int(W * 0.32):] = False
+    mask[:, int(W * 0.24):] = False
     mask[:60, :] = False
     rows = mask.sum(axis=1)
-    hits = [i for i in range(H) if rows[i] >= 6]
+    hits = [i for i in range(H) if rows[i] >= 12]
     if not hits:
         return None
     ys = sorted(hits)
