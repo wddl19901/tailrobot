@@ -51,9 +51,35 @@ jobs:
       - name: Build
         run: python build.py
 
+      - name: Package app
+        run: zip -ry dist/TailRobot-macos.zip dist/TailRobot.app
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: TailRobot-macos-app
-          path: dist/TailRobot.app
+          path: dist/TailRobot-macos.zip
           if-no-files-found: error
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TailRobot-windows-exe
+          path: release/TailRobot-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: TailRobot-macos-app
+          path: release/TailRobot-macos
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/**
+          generate_release_notes: true
+          draft: false
+          prerelease: false
