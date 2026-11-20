@@ -162,3 +162,45 @@ def detect_open_button(arr):
                     "panel": (x_min, y_min, x_max, y_max)}
     return {"cx": x_min + pw // 2, "cy": y_min + int(ph * 0.72),
             "panel": (x_min, y_min, x_max, y_max), "estimated": True}
+
+
+def detect_result_close(arr):
+    """红包结果页: 顶部红色头带 + 右上角白色×; 头带高度小于窗口35%以区别于整片红的开包弹窗"""
+    if arr is None or arr.size == 0 or arr.ndim != 3 or arr.shape[2] < 3:
+        return None
+    r, g, b = _channels(arr)
+    red = (r >= 195) & (g <= 130) & (b <= 110)
+    H, W = red.shape
+    rows = red.sum(axis=1)
+    hit = [i for i in range(H) if rows[i] > 200]
+    if not hit:
+        return None
+    y0 = hit[0]
+    y1 = y0
+    for i in range(y0 + 1, min(H, y0 + 500)):
+        if rows[i] > 200:
+            y1 = i
+        else:
+            break
+    band_h = y1 - y0
+    if band_h < 60 or band_h > H * 0.35:
+        return None
+    band = red[y0:y1 + 1]
+    cols = np.where(band.sum(axis=0) > band_h * 0.5)[0]
+    if cols.size == 0:
+        return None
+    x1 = int(cols[-1])
+    x0 = int(cols[0])
+    bx = x1 - 110
+    if bx < 0:
+        bx = 0
+    bh = min(55, band_h)
+    box_r = r[y0 + 4:y0 + 4 + bh, bx:x1]
+    box_g = g[y0 + 4:y0 + 4 + bh, bx:x1]
+    box_b = b[y0 + 4:y0 + 4 + bh, bx:x1]
+    white = (box_r >= 190) & (box_g >= 190) & (box_b >= 190)
+    if int(white.sum()) < 8:
+        return None
+    ys, xs = np.where(white)
+    return {"cx": int(xs.mean()) + bx, "cy": int(ys.mean()) + y0 + 4,
+            "panel": (x0, y0, x1, y1)}

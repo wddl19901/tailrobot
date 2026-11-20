@@ -9,7 +9,7 @@ import numpy as np
 from ..utils.logger import get_logger
 from ..calc_engine.calculator import get_points
 from .ocr_worker import OcrWorker
-from .redpack import detect_red_packet_cards, detect_open_button, detect_sidebar_redpack
+from .redpack import detect_red_packet_cards, detect_open_button, detect_sidebar_redpack, detect_result_close
 from ..executor.auto_clicker import AutoClicker
 from .account_manager import PollingAllocator, RedPacketState
 from ..orchestrator import Account
@@ -143,6 +143,7 @@ class RobotWorker:
         self._last_fg_was_min = False
         self._last_side_pos = None
         self._side_streak = 0
+        self._last_close_ts = 0.0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -225,6 +226,15 @@ class RobotWorker:
             self.log_cb("监控中: 未找到微信窗口(请确认微信已登录且窗口未最小化)", False)
 
     def _process(self, arr, now):
+        rc = detect_result_close(arr)
+        if rc:
+            self._last_signal_ts = now
+            if now - self._last_close_ts >= 1.0:
+                self._last_close_ts = now
+                sx, sy = self._rect[0] + rc["cx"], self._rect[1] + rc["cy"]
+                self.clicker.click_point(sx, sy)
+                self.log_cb(f"检测到红包结果页，点×关闭 @({sx},{sy})")
+            return
         ob = detect_open_button(arr)
         if ob:
             self._last_signal_ts = now
@@ -323,12 +333,8 @@ class RobotWorker:
 
     def _close_popup(self):
         try:
-            time.sleep(random.uniform(0.10, 0.20))
+            self._last_close_ts = time.time()
             self.clicker.press_escape()
-            time.sleep(random.uniform(0.08, 0.18))
-            self.clicker.press_escape()
-            time.sleep(random.uniform(0.08, 0.15))
-            self.log_cb("红包结果页已关闭(ESC)，继续监控下一个红包", False)
         except Exception as e:
             logger.debug(f"close popup: {e}")
 
