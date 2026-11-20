@@ -294,21 +294,22 @@ class RobotWorker:
     def _on_ocr_text(self, text: str):
         self.remark.on_text(text)
         if "存入零钱" in text or "已存入" in text:
-            m2 = re.search(r"(\d+(?:\.\d+)?)(?:\s*元)?", text)
-            if m2:
-                amt = float(m2.group(1))
-                if 0.005 <= amt <= 100000 and amt != getattr(self, "_last_grab_amt", None):
-                    self._last_grab_amt = amt
-                    who = self.accounts[0].name if self.accounts else "主号"
-                    self.log_cb(f"查询到账: {who} 本次抢到 {amt:.2f}元 已存入零钱", True)
-        m = re.search(r"已领?取?\s*(\d+)\s*/\s*(\d+)", text)
+            dec = [float(n) for n in re.findall(r"\d+\.\d+", text) if 0.005 <= float(n) <= 100000]
+            amt = max(dec) if dec else 0.0
+            if amt and amt != getattr(self, "_last_grab_amt", None):
+                self._last_grab_amt = amt
+                who = self.accounts[0].name if self.accounts else "主号"
+                self.log_cb(f"查询到账: {who} 本次抢到 {amt:.2f}元 已存入零钱", True)
+        m = re.search(r"(\d{1,2})\s*/\s*(\d{1,2})", text)
         if m:
             claimed, total = int(m.group(1)), int(m.group(2))
-            nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", text)]
-            amount = max(nums) if nums else 0.0
-            if total > 0 and (claimed, total, amount) != (self.state.claimed_count, self.state.total_count, self.state.total_amount):
+            if not (0 < claimed <= total <= 99):
+                return
+            dec = [float(n) for n in re.findall(r"\d+\.\d+", text) if 0.01 <= float(n) <= 100000]
+            amount = max(dec) if dec else 0.0
+            if (claimed, total, amount) != (self.state.claimed_count, self.state.total_count, self.state.total_amount):
                 self.state.update(total, claimed, amount)
-                if total - claimed == 1:
+                if total - claimed == 1 and amount > 0:
                     tail = amount - self.state.claimed_sum
                     self.log_cb(f"等待尾包: 已领{claimed}/{total} 总额{amount:.2f} 尾包金额≈{max(tail,0.01):.2f}元")
 

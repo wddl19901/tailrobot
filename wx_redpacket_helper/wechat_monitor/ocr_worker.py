@@ -14,6 +14,12 @@ _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 
 def _pick_ocr():
     try:
+        from rapidocr import RapidOCR
+        ocr = RapidOCR()
+        return ("rapid", ocr)
+    except Exception:
+        pass
+    try:
         from paddleocr import PaddleOCR
         ocr = PaddleOCR(use_angle_cls=False, lang="ch", show_log=False)
         return ("paddle", ocr)
@@ -34,7 +40,7 @@ class OcrWorker:
     on_tail 回调: (total_count, claimed_count, total_amount, claimed_sum)
     """
 
-    INTERVAL = 0.12
+    INTERVAL = 0.08
 
     def __init__(self, region=None, hwnd=0, on_tail=None, log_cb=None, on_text=None):
         self.region = region
@@ -97,9 +103,18 @@ class OcrWorker:
             mon = self._screenshotter.monitors[0]
             shot = self._screenshotter.grab(mon)
         import numpy as np
-        return np.asarray(shot)
+        a = np.asarray(shot)
+        if a.ndim == 3 and a.shape[2] == 4:
+            a = a[:, :, [2, 1, 0]]
+        return a
 
     def _ocr_text(self, arr):
+        if self._engine == "rapid":
+            result = self._ocr(arr)
+            txts = getattr(result, "txts", None)
+            if txts is None and isinstance(result, dict):
+                txts = result.get("txts", [])
+            return " ".join(str(x) for x in (txts or []))
         if self._engine == "paddle":
             result = self._ocr.ocr(arr, cls=False)
             parts = []
@@ -128,17 +143,16 @@ class OcrWorker:
         self._parse(text)
 
     def _parse(self, text: str):
-        nums = _NUM_RE.findall(text)
-        if not nums:
+        m = re.search(r"(\d{1,2})\s*/\s*(\d{1,2})", text)
+        if not m:
             return
-        m = re.search(r"已领?取?\s*(\d+)\s*/\s*(\d+)", text)
-        claimed = total = None
-        if m:
-            claimed, total = int(m.group(1)), int(m.group(2))
-        amounts = [float(n) for n in nums]
-        total_amount = max(amounts) if amounts else None
-        claimed_sum = 0.0
-        if total is not None and claimed is not None and claimed == total - 1:
-            self.log_cb(f"锁定尾包: 已领取{claimed}/{total} 总额{total_amount}")
-            if self.on_tail:
-                self.on_tail(total, claimed, total_amount or 0.0, claimed_sum)
+        claimed, total = int(m.group(1)), int(m.group(2))
+        if not (0 < claimed <= total <= 99):
+            return
+        nums = [n for n in _NUM_RE.findall(text) if 0.01 <= float(n) <= 100000]
+        decimals = [n for n in nums if "." in n]
+        total_amount = float(max(decimals, key=float)) if decimals else 0.0
+        if total - claimed <= 1:
+            self.log_cb(f"剩余包数: {total - claimed} (已领{claimed}/{total} 总额{total_amount})")
+        if self.on_tail:
+            self.on_tail(total, claimed, total_amount, 0.0)
