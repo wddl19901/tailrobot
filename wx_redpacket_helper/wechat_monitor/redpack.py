@@ -70,6 +70,41 @@ def detect_red_packet_cards(arr):
     return out
 
 
+def detect_sidebar_redpack(arr):
+    """左侧会话列表里的红包预览(小橙色卡片/微信红包文字旁的小图)"""
+    if arr is None or arr.size == 0 or arr.ndim != 3 or arr.shape[2] < 3:
+        return None
+    r, g, b = _channels(arr)
+    card = (r >= 235) & (r <= 255) & (g >= 130) & (g <= 180) & (b >= 35) & (b <= 90)
+    icon = (r >= 200) & (r <= 255) & (g >= 55) & (g <= 120) & (b >= 30) & (b <= 95)
+    mask = card | icon
+    H, W = mask.shape
+    mask[:, int(W * 0.32):] = False
+    mask[:60, :] = False
+    rows = mask.sum(axis=1)
+    hits = [i for i in range(H) if rows[i] >= 6]
+    if not hits:
+        return None
+    ys = sorted(hits)
+    r0 = ys[0]
+    r1 = ys[0]
+    for i in ys[1:]:
+        if i - r1 <= 4:
+            r1 = i
+        else:
+            break
+    rh = r1 - r0
+    if rh < 8:
+        return None
+    cols = np.where(mask[r0:r1 + 1].sum(axis=0) > 0)[0]
+    if cols.size == 0:
+        return None
+    area = int(mask[r0:r1 + 1, cols[0]:cols[-1] + 1].sum())
+    if area < 80:
+        return None
+    return {"cx": int(cols.mean()), "cy": r0 + rh // 2, "area": area}
+
+
 def detect_open_button(arr):
     """全屏/窗口截图中的红包弹窗 + 金色'开'按钮，返回点击坐标(截图内)"""
     if arr is None or arr.size == 0 or arr.ndim != 3 or arr.shape[2] < 3:

@@ -9,7 +9,7 @@ import numpy as np
 from ..utils.logger import get_logger
 from ..calc_engine.calculator import get_points
 from .ocr_worker import OcrWorker
-from .redpack import detect_red_packet_cards, detect_open_button
+from .redpack import detect_red_packet_cards, detect_open_button, detect_sidebar_redpack
 from ..executor.auto_clicker import AutoClicker
 from .account_manager import PollingAllocator, RedPacketState
 from ..orchestrator import Account
@@ -103,6 +103,9 @@ class RobotWorker:
         self._picks = 0
         self._last_click_ts = 0.0
         self._last_card_click_ts = 0.0
+        self._last_side_ts = 0.0
+        self._last_side_click_ts = 0.0
+        self._last_scroll_ts = 0.0
         self._last_heartbeat_ts = 0.0
         self._round_active = False
         self._last_signal_ts = 0.0
@@ -214,12 +217,47 @@ class RobotWorker:
                 self._record_click(sx, sy)
                 self.clicker.click_point(sx, sy)
             return
+        side = detect_sidebar_redpack(arr)
+        if side:
+            self._last_side_ts = now
+            if now - self._last_side_click_ts >= 1.0:
+                self._last_side_click_ts = now
+                sx = self._rect[0] + min(side["cx"] + 30, int(arr.shape[1] * 0.30))
+                sy = self._rect[1] + side["cy"]
+                self.log_cb(f"会话列表发现红包预览@(窗口坐标 {side['cx']},{side['cy']})，自动打开该群")
+                self.clicker.click_point(sx, sy)
+            return
+        if now - self._last_scroll_ts > 12:
+            self._last_scroll_ts = now
+            self._scroll_sidebar(arr)
         if self._round_active and now - self._last_signal_ts > 4:
             self._round_active = False
             self.log_cb(f"红包轮次结束，本轮共抢{self._picks}次", self._picks > 0)
         elif now - self._last_heartbeat_ts > 5:
             self._last_heartbeat_ts = now
             self.log_cb("监控中: 等待红包(卡片->弹窗->开钮 全自动)", False)
+
+    def _scroll_sidebar(self, arr):
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            W, H = arr.shape[1], arr.shape[0]
+            strip = arr[60:130, :int(W * 0.30)]
+            key = strip[::4, ::4].tobytes()
+            if key == getattr(self, "_top_strip_key", None):
+                self._top_streak = getattr(self, "_top_streak", 0) + 1
+            else:
+                self._top_streak = 0
+                self._top_strip_key = key
+            if self._top_streak >= 2:
+                return
+            x, y = self._rect[0] + int(W * 0.15), self._rect[1] + int(H * 0.5)
+            user32.SetCursorPos(x, y)
+            time.sleep(0.03)
+            user32.mouse_event(0x0800, 0, -120, 0)
+            self.log_cb("已滚动会话列表(检查其他群红包)", False)
+        except Exception as e:
+            logger.debug(f"scroll sidebar: {e}")
 
     def _close_popup(self):
         try:
