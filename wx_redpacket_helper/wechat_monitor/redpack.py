@@ -63,6 +63,8 @@ def detect_red_packet_cards(arr):
             continue
         if px / max(pkt["w"] * pkt["h"], 1) < 0.5:
             continue
+        if pkt["w"] > int(W * 0.30):
+            continue
         if int(icon[pkt["y"]:pkt["y"] + pkt["h"], pkt["x"]:pkt["x"] + pkt["w"]].sum()) < 200:
             continue
         out.append(pkt)
