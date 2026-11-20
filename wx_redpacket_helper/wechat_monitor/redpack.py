@@ -181,7 +181,7 @@ def detect_result_close(arr):
     if y0 > H * 0.05:
         return None
     band_h = y1 - y0
-    if band_h < 30 or band_h > H * 0.30:
+    if band_h < 25 or band_h > H * 0.35:
         return None
     band = red[y0:y1 + 1]
     cols = np.where(band.sum(axis=0) > band_h * 0.3)[0]
@@ -189,14 +189,19 @@ def detect_result_close(arr):
         return None
     x0 = int(cols[0])
     x1 = int(cols[-1])
-    bx0 = max(0, x1 - 180)
-    bh = min(90, band_h)
+    if x1 - x0 < int(W * 0.10):
+        return None
+    bw = x1 - x0
+    bh = min(90, max(40, band_h // 2))
+    bx0 = max(0, x1 - min(220, max(120, bw // 2)))
     box_r = r[y0:y0 + bh, bx0:x1 + 1]
     box_g = g[y0:y0 + bh, bx0:x1 + 1]
     box_b = b[y0:y0 + bh, bx0:x1 + 1]
     white = (box_r >= 185) & (box_g >= 185) & (box_b >= 185)
-    if int(white.sum()) < 6:
-        return None
-    ys, xs = np.where(white)
-    return {"cx": int(xs.mean()) + bx0, "cy": int(ys.mean()) + y0,
-            "panel": (x0, y0, x1, y1)}
+    if int(white.sum()) >= 6:
+        ys, xs = np.where(white)
+        cx = int(xs.mean()) + bx0
+        cy = int(ys.mean()) + y0
+    else:
+        cx, cy = x1 - 24, y0 + 22
+    return {"cx": cx, "cy": cy, "panel": (x0, y0, x1, y1)}
