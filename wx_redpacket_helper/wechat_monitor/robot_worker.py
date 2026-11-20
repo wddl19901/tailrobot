@@ -173,7 +173,6 @@ class RobotWorker:
         self._round_active = False
         self._last_signal_ts = 0.0
         self._clicked = []
-        self._cur_panel = None
         self._last_fg_ts = 0.0
         self._last_fg_was_min = False
         self._last_side_pos = None
@@ -189,6 +188,10 @@ class RobotWorker:
         self._last_result_gone_ts = 0.0
         self._last_pick_ts = 0.0
         self._main_claimed_sum = 0.0
+        self._cur_card_key = None
+        self._cur_card_pos = None
+        self._card_done = False
+        self._ob_first_ts = 0.0
         self._no_win_warned = False
         self._win_switched_ts = 0.0
         self._last_reopen_done_ts = 0.0
@@ -269,6 +272,9 @@ class RobotWorker:
                 self._win_switched_ts = now
                 self._last_signal_ts = now
                 self._clicked = []
+                self._cur_card_key = None
+                self._cur_card_pos = None
+                self._card_done = False
                 self._last_card_pos = None
                 self._last_card_log_key = None
                 self._last_side_pos = None
@@ -319,28 +325,36 @@ class RobotWorker:
                     return True
                 self._last_result_gone_ts = 0.0
                 self._last_close_ts = 0.0
-                self._reopen_check(now)
+                if self._cur_card_pos and self.state.remaining >= 1 and self._tail_mark is None:
+                    sx, sy = self._cur_card_pos
+                    self._record_click(sx, sy)
+                    self._last_card_click_ts = time.time()
+                    self.log_cb(f"抢完按ESC，再点刚才的红包查剩余包数(剩{self.state.remaining}个)", False)
+                    time.sleep(random.uniform(0.05, 0.15))
+                    self.clicker.click_point(sx, sy)
             return True
         ob = detect_open_button(arr)
         if ob:
             self._last_signal_ts = now
-            panel = ob["panel"]
-            if self._cur_panel is None:
-                self._cur_panel = panel
-                self._picks = 0
-                self._clicked = []
-            elif panel != self._cur_panel:
-                self._cur_panel = panel
-                self._picks = 0
-                self._clicked = []
-                self._last_click_ts = 0.0
-            sx, sy = self._rect[0] + ob["cx"], self._rect[1] + ob["cy"]
-            if not self._round_active:
-                self._round_active = True
-                self.log_cb(f"红包弹窗已打开(面板{panel}) 开钮@{sx},{sy}", False)
+            if self._ob_first_ts == 0.0:
+                self._ob_first_ts = now
+                self.log_cb(f"红包详情页已打开(面板{ob['panel']}) 等OCR读剩余包数", False)
                 self._dump_debug(arr, "popup")
+            stale = now - self._state_fresh_ts > 4
+            if stale and now - self._ob_first_ts > 12:
+                who = self.accounts[0].name if self.accounts else "主号"
+                self.log_cb(f"{who} 详情页{now - self._ob_first_ts:.0f}秒无OCR数据，放弃本包", False)
+                self.clicker.press_escape()
+                time.sleep(0.3)
+                self._reset_round()
+                return True
             if self._tail_hold():
                 return True
+            if self._tail_mark is not None and now - self._last_close_ts >= 0.5:
+                self.clicker.press_escape()
+                self._last_close_ts = now
+                return True
+            sx, sy = self._rect[0] + ob["cx"], self._rect[1] + ob["cy"]
             if not self._is_clicked(sx, sy) and now - self._last_click_ts >= 0.6:
                 delay = random.uniform(0.05, 0.15)
                 time.sleep(delay)
@@ -349,33 +363,46 @@ class RobotWorker:
                 self._record_click(sx, sy)
                 self.clicker.click_point(sx, sy)
                 who = self.accounts[0].name if self.accounts else "主号"
-                self.state.claimed_count += 1
-                self.log_cb(f"{who} 点开抢包执行 @({sx},{sy}) (共抢{self._picks}次)", True)
+                self.log_cb(f"{who} 点「开」抢包 @({sx},{sy}) 共抢{self._picks}次", True)
                 time.sleep(random.uniform(0.4, 0.6))
                 self._close_popup()
             return True
+        if not ob:
+            if self._card_done:
+                if now - self._last_signal_ts > 8:
+                    who = self.accounts[0].name if self.accounts else "主号"
+                    self.log_cb(f"{who} 本包结束: 共抢{self._picks}个 合计{self._main_claimed_sum:.2f}元，停止点击本包", self._picks > 0)
+                    self._card_done = False
+                    self._last_card_pos = None
+            else:
+                self._ob_first_ts = 0.0
         cards = detect_red_packet_cards(arr)
         if cards:
+            if ob or rc or self._card_done:
+                return True
             if now - self._last_close_ts < 2.5:
                 return True
-            self._last_signal_ts = now
             newest = cards[-1]
-            sx, sy = self._rect[0] + newest["cx"], self._rect[1] + newest["cy"]
-            key = (sx // 16, sy // 16, len(cards))
+            key = (newest["cx"] // 16, newest["cy"] // 16)
+            if key != self._cur_card_key:
+                self._cur_card_key = key
+                self._cur_card_pos = (self._rect[0] + newest["cx"], self._rect[1] + newest["cy"])
+                self._reset_round()
+                self.log_cb(f"检测到新红包卡片({len(cards)}个)，点击最新 @{self._cur_card_pos[0]},{self._cur_card_pos[1]}", True)
+                self._dump_debug(arr, "cards")
+            sx, sy = self._cur_card_pos
             if now - self._last_card_click_ts >= 0.8:
                 self._last_card_click_ts = now
-                if key != self._last_card_log_key:
-                    self._last_card_log_key = key
-                    self.log_cb(f"检测到红包卡片{len(cards)}个，点击最新@{sx},{sy} (尺寸{newest['w']}x{newest['h']})")
-                    self._dump_debug(arr, "cards")
                 delay = random.uniform(0.05, 0.15)
                 time.sleep(delay)
                 self._record_click(sx, sy)
                 self._last_card_pos = (sx, sy)
                 self.clicker.click_point(sx, sy)
+                self._card_done = True
+                self._round_active = True
             return True
         side = detect_sidebar_redpack(arr)
-        if side:
+        if side and not self._round_active:
             self._last_side_ts = now
             key = (side["cx"] // 16, side["cy"] // 16)
             if key == self._last_side_pos:
@@ -383,7 +410,7 @@ class RobotWorker:
             else:
                 self._last_side_pos = key
                 self._side_streak = 0
-            if self._side_streak < 8 and now - self._last_side_click_ts >= 2.0:
+            if self._side_streak < 8 and now - self._last_side_click_ts >= 4.0:
                 self._last_side_click_ts = now
                 sx = self._rect[0] + min(side["cx"] + 30, int(arr.shape[1] * 0.30))
                 sy = self._rect[1] + side["cy"]
@@ -396,21 +423,20 @@ class RobotWorker:
                 self._scroll_sidebar(arr)
         if self._round_active and now - self._last_signal_ts > 4:
             self._round_active = False
-            who = self.accounts[0].name if self.accounts else "主号"
-            self.log_cb(f"{who} 本轮结束: 共抢{self._picks}个 合计{self._main_claimed_sum:.2f}元", self._picks > 0)
-            self._clicked = []
-            self._cur_panel = None
-            self._picks = 0
-            self.state.claimed_sum = 0.0
-            self.state.total_count = 0
-            self.state.total_amount = 0.0
-            self.state.claimed_count = 0
-            self._state_fresh_ts = 0.0
-            self._main_claimed_sum = 0.0
-            self._tail_mark = None
-            self._last_card_pos = None
-            self._last_card_log_key = None
         return False
+
+    def _reset_round(self):
+        self._round_active = True
+        self._picks = 0
+        self._main_claimed_sum = 0.0
+        self._tail_mark = None
+        self._ob_first_ts = 0.0
+        self._state_fresh_ts = 0.0
+        self._clicked = []
+        self.state.total_count = 0
+        self.state.claimed_count = 0
+        self.state.total_amount = 0.0
+        self.state.claimed_sum = 0.0
 
     def _scroll_sidebar(self, arr):
         try:
@@ -445,21 +471,6 @@ class RobotWorker:
             return False
         fresh = time.time() - self._state_fresh_ts < 15
         return fresh and self.state.remaining == 1 and self.state.total_amount > 0
-
-    def _reopen_check(self, now):
-        if self._tail_mark is not None or not self._last_card_pos:
-            return
-        if not self._tail_hold() or not self.state.total_count:
-            return
-        if now - self._last_reopen_ts < 6:
-            return
-        self._last_reopen_ts = now
-        self.log_cb("尾包精算: 重新点红包卡片查剩余包数", False)
-        self.clicker.press_escape()
-        time.sleep(0.5)
-        sx, sy = self._last_card_pos
-        self._record_click(sx, sy)
-        self.clicker.click_point(sx, sy)
 
     def _mark_tail_no_grab(self, tail, points):
         self._tail_mark = {"ts": time.time(), "amount": round(tail, 2), "points": points}
@@ -517,7 +528,7 @@ class RobotWorker:
                 self.state.update(total, claimed, amount, self._main_claimed_sum)
                 self._state_fresh_ts = time.time()
                 if self.state.remaining == 1 and amount > 0 and self._tail_mark is None:
-                    self._reopen_check(time.time())
+                    self._decide_tail()
 
     def _on_tail(self, total: int, claimed: int, total_amount: float, claimed_sum: float):
         if self._stop.is_set() or not self._round_active:
